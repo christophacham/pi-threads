@@ -4,10 +4,14 @@ import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	appendInterAgentUserMessage,
 	buildThreadChildrenMap,
+	collectUserMessageEntryIds,
+	createThreadSendActivity,
 	createThreadSpawnedActivity,
 	emitThreadSpawnedTranscript,
 	findAllThreadSpawned,
+	findUnprocessedUserMessages,
 	shouldResumeThreadSession,
 	extractThreadOutput,
 	findFirstThreadMeta,
@@ -20,6 +24,7 @@ import {
 	parseInterAgentMessage,
 	writeThreadCompleted,
 	writeThreadMeta,
+	writeThreadSendDual,
 	writeThreadSpawnedDurable,
 	writeThreadSpawnedDual,
 } from "./persistence.ts";
@@ -368,6 +373,77 @@ describe("thread session entries", () => {
 		});
 
 		expect(extractThreadOutput(sm.getEntries())).toBe("real thread output");
+	});
+
+	it("appendInterAgentUserMessage writes envelope user messages", () => {
+		const sm = createSessionManager();
+		appendInterAgentUserMessage(sm, {
+			author: "root",
+			recipient: "worker",
+			content: "Check tests",
+		});
+
+		const userEntries = sm
+			.getEntries()
+			.filter((entry) => entry.type === "message" && entry.message.role === "user");
+		expect(userEntries).toHaveLength(1);
+		expect(userEntries[0]).toMatchObject({
+			type: "message",
+			message: {
+				role: "user",
+				content: "[From root to worker]: Check tests",
+			},
+		});
+	});
+
+	it("findUnprocessedUserMessages skips already processed ids", () => {
+		const sm = createSessionManager();
+		appendInterAgentUserMessage(sm, { author: "root", recipient: "worker", content: "one" });
+		appendInterAgentUserMessage(sm, { author: "root", recipient: "worker", content: "two" });
+
+		const ids = collectUserMessageEntryIds(sm.getEntries());
+		const processed = new Set([ids[0]]);
+		const unprocessed = findUnprocessedUserMessages(sm.getEntries(), processed);
+
+		expect(unprocessed).toHaveLength(1);
+		expect(unprocessed[0]?.text).toBe("[From root to worker]: two");
+	});
+
+	it("dual-writes thread_send durable + transcript", () => {
+		const durableEntries: Array<{ customType: string; data?: unknown }> = [];
+		const transcriptMessages: Array<{ customType: string; content: string; display: boolean; details?: unknown }> =
+			[];
+
+		const dualWriter = {
+			appendEntry: (customType: string, data?: unknown) => {
+				durableEntries.push({ customType, data });
+			},
+			sendMessage: (message: { customType: string; content: string; display: boolean; details?: unknown }) => {
+				transcriptMessages.push(message);
+			},
+		};
+
+		const event = createThreadSendActivity({
+			thread_id: "thread-1",
+			thread_name: "worker",
+			agent_type: "worker",
+			message_preview: "hello there",
+		});
+
+		writeThreadSendDual(dualWriter, event);
+
+		expect(durableEntries).toEqual([
+			{
+				customType: THREAD_TRANSCRIPT_TYPES.SEND,
+				data: event,
+			},
+		]);
+		expect(transcriptMessages[0]).toMatchObject({
+			customType: THREAD_TRANSCRIPT_TYPES.SEND,
+			content: "Sent input to worker: hello there",
+			display: true,
+			details: event,
+		});
 	});
 
 	it("emitThreadSpawnedTranscript sends inline event", () => {

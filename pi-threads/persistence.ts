@@ -1,3 +1,4 @@
+import type { UserMessage } from "@earendil-works/pi-ai";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import {
@@ -42,6 +43,62 @@ export interface SessionEntryReader {
 
 export function formatInterAgentMessage(envelope: InterAgentCommunication): string {
 	return `[From ${envelope.author} to ${envelope.recipient}]: ${envelope.content}`;
+}
+
+export function extractUserMessageText(message: UserMessage): string | null {
+	if (message.role !== "user") return null;
+
+	if (typeof message.content === "string") {
+		const text = message.content.trim();
+		return text.length > 0 ? message.content : null;
+	}
+
+	const parts: string[] = [];
+	for (const block of message.content) {
+		if (block.type === "text" && block.text.trim()) {
+			parts.push(block.text);
+		}
+	}
+
+	return parts.length > 0 ? parts.join("\n") : null;
+}
+
+export function collectUserMessageEntryIds(entries: SessionEntry[]): string[] {
+	const ids: string[] = [];
+	for (const entry of entries) {
+		if (entry.type !== "message" || entry.message.role !== "user") continue;
+		ids.push(entry.id);
+	}
+	return ids;
+}
+
+export function findUnprocessedUserMessages(
+	entries: SessionEntry[],
+	processedIds: ReadonlySet<string>,
+): Array<{ id: string; text: string }> {
+	const messages: Array<{ id: string; text: string }> = [];
+	for (const entry of entries) {
+		if (entry.type !== "message" || entry.message.role !== "user") continue;
+		if (processedIds.has(entry.id)) continue;
+
+		const text = extractUserMessageText(entry.message as UserMessage);
+		if (!text) continue;
+
+		messages.push({ id: entry.id, text });
+	}
+	return messages;
+}
+
+/** Append an inter-agent user message to a thread child session file. */
+export function appendInterAgentUserMessage(
+	sessionManager: SessionManager,
+	envelope: InterAgentCommunication,
+): string {
+	return sessionManager.appendMessage({
+		role: "user",
+		content: formatInterAgentMessage(envelope),
+		timestamp: Date.now(),
+	});
 }
 
 export function parseInterAgentMessage(text: string): InterAgentCommunication | null {
@@ -301,6 +358,15 @@ export function emitThreadSendTranscript(emitter: TranscriptEmitter, event: Thre
 		display: true,
 		details: event,
 	});
+}
+
+/** Dual-write: durable interaction log + inline transcript for thread send. */
+export function writeThreadSendDual(
+	writer: DurableWriter & TranscriptEmitter,
+	event: ThreadSendActivity,
+): void {
+	writer.appendEntry(THREAD_TRANSCRIPT_TYPES.SEND, event);
+	emitThreadSendTranscript(writer, event);
 }
 
 export function emitThreadWaitTranscript(emitter: TranscriptEmitter, event: ThreadWaitActivity): void {

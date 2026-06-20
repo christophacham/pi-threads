@@ -941,6 +941,80 @@ describe("ThreadManager", () => {
 		);
 	});
 
+	it("send meets send_to_thread acceptance criteria", async () => {
+		const cwd = createWorkspace();
+		const pi = createMockPi();
+		const mockProcess = createMockProcess();
+		const manager = new ThreadManager(pi, {
+			spawner: {
+				spawn: vi.fn(() => mockProcess),
+			},
+		});
+		const ctx = createContext(cwd);
+
+		const spawned = await manager.spawn(ctx, {
+			task: "Initial work",
+			thread_name: "worker",
+			agent_type: "worker",
+		});
+
+		const result = await manager.send(ctx, {
+			thread_id: spawned.thread_id,
+			message: "Please continue with tests",
+		});
+
+		expect(result).toEqual({
+			thread_id: spawned.thread_id,
+			thread_name: "worker",
+		});
+
+		const childSession = SessionManager.open(manager.getActiveThreads().get(spawned.thread_id)!.sessionFile);
+		const userMessages = childSession
+			.getEntries()
+			.filter((entry) => entry.type === "message" && entry.message.role === "user")
+			.map((entry) =>
+				entry.type === "message" && entry.message.role === "user" ? entry.message.content : "",
+			);
+		expect(userMessages).toContain("[From root to worker]: Please continue with tests");
+
+		expect(pi.appendEntry).toHaveBeenCalledWith(
+			THREAD_TRANSCRIPT_TYPES.SEND,
+			expect.objectContaining({
+				kind: "Interacted",
+				thread_id: spawned.thread_id,
+				thread_name: "worker",
+				agent_type: "worker",
+				message_preview: "Please continue with tests",
+			}),
+		);
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: THREAD_TRANSCRIPT_TYPES.SEND,
+				content: "Sent input to worker: Please continue with tests",
+				display: true,
+				details: expect.objectContaining({
+					kind: "Interacted",
+					thread_id: spawned.thread_id,
+					thread_name: "worker",
+				}),
+			}),
+		);
+
+		await expect(
+			manager.send(ctx, { thread_id: "missing-thread", message: "hello" }),
+		).rejects.toThrow("Thread not found");
+
+		createThreadSession(cwd, {
+			thread_id: "thread-done",
+			thread_name: "done",
+			task: "Finished",
+			status: "completed",
+		});
+		await expect(
+			manager.send(ctx, { thread_id: "thread-done", message: "hello" }),
+		).rejects.toThrow("Thread is not running");
+	});
+
 	it("close meets close_thread acceptance criteria", async () => {
 		const cwd = createWorkspace();
 		const pi = createMockPi();

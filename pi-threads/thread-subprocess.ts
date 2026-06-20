@@ -2,6 +2,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const WAIT_POLL_INTERVAL_MS = 500;
+export const SEND_POLL_INTERVAL_MS = 2000;
+export const SEND_POLL_FLAG = "pi-threads-poll-ms";
 export const SIGKILL_TIMEOUT_MS = 5000;
 export const STATUS_FEED_MAX_LINES = 3;
 export const OUTPUT_RING_BUFFER_SIZE = 200;
