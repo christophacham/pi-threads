@@ -122,6 +122,47 @@ export interface ThreadSessionInfo {
 	completion?: ThreadCompletedData;
 }
 
+/** True when a thread session has thread_meta but no terminal thread_completed entry. */
+export function shouldResumeThreadSession(session: ThreadSessionInfo): boolean {
+	return session.completion === undefined;
+}
+
+function addThreadChild(
+	children: Map<string, Set<ThreadId>>,
+	parentId: string,
+	threadId: ThreadId,
+): void {
+	const existing = children.get(parentId) ?? new Set<ThreadId>();
+	existing.add(threadId);
+	children.set(parentId, existing);
+}
+
+/**
+ * Rebuild parent→children relationships from durable thread_spawned entries
+ * in parent sessions, cross-referenced with thread_meta parent_id fields.
+ */
+export async function buildThreadChildrenMap(
+	cwd: string,
+	sessionDir?: string,
+): Promise<Map<string, Set<ThreadId>>> {
+	const children = new Map<string, Set<ThreadId>>();
+	const allSessions = await SessionManager.list(cwd, sessionDir);
+
+	for (const info of allSessions) {
+		const manager = SessionManager.open(info.path, sessionDir);
+		for (const spawned of findAllThreadSpawned(manager.getEntries())) {
+			addThreadChild(children, spawned.parent_id, spawned.thread_id);
+		}
+	}
+
+	const threadSessions = await listThreadSessions(cwd, sessionDir);
+	for (const session of threadSessions) {
+		addThreadChild(children, session.meta.parent_id, session.meta.thread_id);
+	}
+
+	return children;
+}
+
 /** Find a thread session by thread_id within a workspace. */
 export async function findThreadSessionById(
 	cwd: string,
@@ -188,7 +229,13 @@ export function writeThreadMeta(sessionManager: SessionManager, data: ThreadMeta
 }
 
 /** Durable parent-session write for tree reconstruction. */
-export function writeThreadSpawnedDurable(writer: DurableWriter, data: ThreadSpawnedData): void {
+export function writeThreadSpawnedDurable(
+	writer: DurableWriter | SessionManager,
+	data: ThreadSpawnedData,
+): string | void {
+	if (writer instanceof SessionManager) {
+		return writer.appendCustomEntry(THREAD_ENTRY_TYPES.SPAWNED, data);
+	}
 	writer.appendEntry(THREAD_ENTRY_TYPES.SPAWNED, data);
 }
 

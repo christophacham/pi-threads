@@ -6,11 +6,15 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	findFirstThreadMeta,
 	findLatestThreadCompleted,
 	writeThreadCompleted,
 	writeThreadMeta,
+	writeThreadSpawnedDurable,
 } from "./persistence.ts";
+import { PI_THREADS_EXTENSION_ENTRY } from "./thread-subprocess.ts";
 import { pollThreadCompletions, ThreadManager } from "./thread-manager.ts";
+import { THREAD_ENTRY_TYPES, THREAD_TRANSCRIPT_TYPES } from "./types.ts";
 
 describe("ThreadManager", () => {
 	const tempDirs: string[] = [];
@@ -82,7 +86,7 @@ describe("ThreadManager", () => {
 		return proc as unknown as ChildProcess;
 	}
 
-	function createContext(cwd: string, sessionId = "parent-session-id"): ExtensionContext {
+	function createContext(cwd: string): ExtensionContext {
 		const parent = trackSession(SessionManager.create(cwd));
 		return {
 			cwd,
@@ -91,6 +95,10 @@ describe("ThreadManager", () => {
 				notify: vi.fn(),
 			},
 		} as unknown as ExtensionContext;
+	}
+
+	function parentSession(ctx: ExtensionContext): SessionManager {
+		return ctx.sessionManager as SessionManager;
 	}
 
 	function persistSession(manager: SessionManager): void {
@@ -151,9 +159,128 @@ describe("ThreadManager", () => {
 		expect(result).toEqual({ incompleteCount: 1, totalThreadSessions: 2, resumedCount: 1 });
 		expect(manager.getActiveThreads().has("thread-1")).toBe(true);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			"pi-threads: 1 incomplete thread session(s); resumed 1 (full resumption: pi-threads-rf0)",
+			"pi-threads: resumed 1 of 1 incomplete thread session(s)",
 			"info",
 		);
+	});
+
+	it("resume skips terminal sessions with completed, error, aborted, or closed status", async () => {
+		const cwd = createWorkspace();
+		const spawnMock = vi.fn(() => createMockProcess());
+		const manager = new ThreadManager(createMockPi(), {
+			spawner: { spawn: spawnMock },
+		});
+		const ctx = createContext(cwd);
+
+		const incomplete = trackSession(SessionManager.create(cwd));
+		writeThreadMeta(incomplete, {
+			parent_id: "parent-1",
+			thread_id: "thread-incomplete",
+			thread_name: "runner",
+			depth: 1,
+			task: "Still running",
+			agent_type: "worker",
+		});
+		persistSession(incomplete);
+
+		for (const [threadId, status] of [
+			["thread-completed", "completed"],
+			["thread-error", "error"],
+			["thread-aborted", "aborted"],
+			["thread-closed", "closed"],
+		] as const) {
+			const session = trackSession(SessionManager.create(cwd));
+			writeThreadMeta(session, {
+				parent_id: "parent-1",
+				thread_id: threadId,
+				thread_name: threadId,
+				depth: 1,
+				task: "Done",
+				agent_type: "worker",
+			});
+			writeThreadCompleted(session, { status });
+			persistSession(session);
+		}
+
+		const result = await manager.resume(ctx);
+
+		expect(result).toEqual({
+			incompleteCount: 1,
+			totalThreadSessions: 5,
+			resumedCount: 1,
+		});
+		expect(spawnMock).toHaveBeenCalledTimes(1);
+		expect(manager.getActiveThreads().has("thread-incomplete")).toBe(true);
+	});
+
+	it("resume respawns without injecting a new prompt", async () => {
+		const cwd = createWorkspace();
+		const spawnMock = vi.fn(() => createMockProcess());
+		const manager = new ThreadManager(createMockPi(), {
+			spawner: { spawn: spawnMock },
+		});
+		const ctx = createContext(cwd);
+
+		const child = trackSession(SessionManager.create(cwd));
+		writeThreadMeta(child, {
+			parent_id: "parent-1",
+			thread_id: "thread-resume",
+			thread_name: "worker",
+			depth: 1,
+			task: "Continue work",
+			agent_type: "worker",
+		});
+		persistSession(child);
+
+		await manager.resume(ctx);
+
+		expect(spawnMock).toHaveBeenCalledTimes(1);
+		const resumeSpawnCall = spawnMock.mock.calls[0] as unknown as
+			| [string, string[], { cwd: string }]
+			| undefined;
+		expect(resumeSpawnCall).toBeDefined();
+		const args = resumeSpawnCall![1];
+		expect(args).toContain("--session");
+		expect(args).not.toContain("-p");
+	});
+
+	it("resume rebuilds parent-child tree from thread_spawned entries", async () => {
+		const cwd = createWorkspace();
+		const manager = new ThreadManager(createMockPi(), {
+			spawner: { spawn: vi.fn(() => createMockProcess()) },
+		});
+		const ctx = createContext(cwd);
+		const parentId = ctx.sessionManager.getSessionId();
+		const parent = parentSession(ctx);
+
+		writeThreadSpawnedDurable(
+			{
+				appendEntry: (customType, data) => parent.appendCustomEntry(customType, data),
+			},
+			{
+				thread_id: "child-a",
+				thread_name: "child-a",
+				parent_id: parentId,
+				depth: 1,
+				agent_type: "worker",
+			},
+		);
+		persistSession(parent);
+
+		const child = trackSession(SessionManager.create(cwd));
+		writeThreadMeta(child, {
+			parent_id: parentId,
+			thread_id: "child-a",
+			thread_name: "child-a",
+			depth: 1,
+			task: "Child task",
+			agent_type: "worker",
+		});
+		persistSession(child);
+
+		await manager.resume(ctx);
+
+		expect(manager.getThreadChildren(parentId)).toEqual(["child-a"]);
 	});
 
 	it("list returns thread summaries with status filtering", async () => {
@@ -193,28 +320,130 @@ describe("ThreadManager", () => {
 		expect(allList).toHaveLength(2);
 	});
 
-	it("spawn creates thread session metadata and tracks active subprocess", async () => {
+	it("spawn meets spawn_thread acceptance criteria", async () => {
 		const cwd = createWorkspace();
 		const pi = createMockPi();
 		const mockProcess = createMockProcess();
+		const spawnFn = vi.fn(() => mockProcess);
 		const manager = new ThreadManager(pi, {
 			spawner: {
-				spawn: vi.fn(() => mockProcess),
+				spawn: spawnFn,
 			},
 		});
 		const ctx = createContext(cwd);
+		const parentId = ctx.sessionManager.getSessionId();
 
 		const result = await manager.spawn(ctx, {
 			task: "Research auth",
 			thread_name: "researcher",
 			agent_type: "researcher",
+			model: "claude-sonnet",
+			tools: ["read", "bash"],
+			cwd,
 		});
 
-		expect(result.thread_name).toBe("researcher");
-		expect(result.thread_id).toBeTruthy();
+		expect(result).toEqual({
+			thread_id: expect.any(String),
+			thread_name: "researcher",
+		});
 		expect(manager.getActiveThreads().has(result.thread_id)).toBe(true);
-		expect(pi.appendEntry).toHaveBeenCalled();
-		expect(pi.sendMessage).toHaveBeenCalled();
+
+		const listed = await SessionManager.list(cwd);
+		const childInfo = listed.find((session) => session.id === result.thread_id);
+		expect(childInfo).toBeTruthy();
+
+		const childSession = SessionManager.open(childInfo!.path);
+		expect(childSession.usesDefaultSessionDir()).toBe(true);
+		expect(childSession.getSessionDir()).toContain("/sessions/");
+
+		const firstCustom = childSession.getEntries().find((entry) => entry.type === "custom");
+		expect(firstCustom).toMatchObject({
+			type: "custom",
+			customType: THREAD_ENTRY_TYPES.META,
+			data: {
+				parent_id: parentId,
+				thread_id: result.thread_id,
+				thread_name: "researcher",
+				depth: 1,
+				task: "Research auth",
+				agent_type: "researcher",
+			},
+		});
+		expect(findFirstThreadMeta(childSession.getEntries())?.parent_id).toBe(parentId);
+
+		expect(spawnFn).toHaveBeenCalledTimes(1);
+		const spawnCall = spawnFn.mock.calls[0] as unknown as [string, string[], { cwd: string }] | undefined;
+		expect(spawnCall).toBeDefined();
+		const args = spawnCall![1];
+		const options = spawnCall![2];
+		expect(options.cwd).toBe(cwd);
+
+		const sessionIdx = args.indexOf("--session");
+		expect(sessionIdx).toBeGreaterThanOrEqual(0);
+		expect(args[sessionIdx + 1]).toBe(childInfo!.path);
+
+		const promptIdx = args.indexOf("-p");
+		expect(promptIdx).toBeGreaterThanOrEqual(0);
+		expect(args[promptIdx + 1]).toBe("[From root to researcher]: Research auth");
+
+		expect(args).toContain("--model");
+		expect(args).toContain("claude-sonnet");
+		expect(args).toContain("--tools");
+		expect(args).toContain("read,bash");
+		expect(args).toContain("--extension");
+		expect(args).toContain(PI_THREADS_EXTENSION_ENTRY);
+
+		expect(pi.appendEntry).toHaveBeenCalledWith(
+			THREAD_ENTRY_TYPES.SPAWNED,
+			expect.objectContaining({
+				thread_id: result.thread_id,
+				thread_name: "researcher",
+				parent_id: parentId,
+				depth: 1,
+				agent_type: "researcher",
+			}),
+		);
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: THREAD_TRANSCRIPT_TYPES.SPAWNED,
+				display: true,
+			}),
+			undefined,
+		);
+	});
+
+	it("spawn defaults fork_turns to none (fresh context, no parent turn copy)", async () => {
+		const cwd = createWorkspace();
+		const manager = new ThreadManager(createMockPi(), {
+			spawner: {
+				spawn: vi.fn(() => createMockProcess()),
+			},
+		});
+		const ctx = createContext(cwd);
+
+		const withoutFork = await manager.spawn(ctx, {
+			task: "Fresh task",
+			thread_name: "worker",
+			agent_type: "worker",
+		});
+		const withExplicitNone = await manager.spawn(ctx, {
+			task: "Also fresh",
+			thread_name: "worker-2",
+			agent_type: "worker",
+			fork_turns: "none",
+		});
+
+		for (const result of [withoutFork, withExplicitNone]) {
+			const listed = await SessionManager.list(cwd);
+			const childInfo = listed.find((session) => session.id === result.thread_id);
+			const childSession = SessionManager.open(childInfo!.path);
+			const messages = childSession
+				.getEntries()
+				.filter((entry) => entry.type === "message")
+				.map((entry) => entry.message);
+			expect(messages).toHaveLength(1);
+			expect(messages[0]?.role).toBe("assistant");
+		}
 	});
 
 	it("pollThreadCompletions resolves when all threads complete", async () => {

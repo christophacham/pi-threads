@@ -4,9 +4,11 @@ import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	buildThreadChildrenMap,
 	createThreadSpawnedActivity,
 	emitThreadSpawnedTranscript,
 	findAllThreadSpawned,
+	shouldResumeThreadSession,
 	extractThreadOutput,
 	findFirstThreadMeta,
 	findLatestThreadCompleted,
@@ -201,6 +203,90 @@ describe("thread session entries", () => {
 		const listed = await listThreadSessions(dir, dir);
 		expect(listed).toHaveLength(1);
 		expect(listed[0].meta.thread_name).toBe("worker");
+	});
+
+	it("shouldResumeThreadSession returns true only for incomplete sessions", () => {
+		const meta = {
+			parent_id: "parent-1",
+			thread_id: "thread-1",
+			thread_name: "worker",
+			depth: 1,
+			task: "task",
+			agent_type: "worker",
+		};
+
+		expect(shouldResumeThreadSession({ path: "/tmp/thread.jsonl", meta })).toBe(true);
+
+		for (const status of ["completed", "error", "aborted", "closed"] as const) {
+			expect(
+				shouldResumeThreadSession({
+					path: "/tmp/thread.jsonl",
+					meta,
+					completion: { status },
+				}),
+			).toBe(false);
+		}
+	});
+
+	it("buildThreadChildrenMap cross-references thread_spawned and thread_meta", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-threads-tree-"));
+		tempDirs.push(dir);
+
+		const parent = SessionManager.create(dir, dir);
+		parent.appendCustomEntry(THREAD_ENTRY_TYPES.SPAWNED, {
+			thread_id: "child-1",
+			thread_name: "child-1",
+			parent_id: "parent-root",
+			depth: 1,
+			agent_type: "worker",
+		});
+		parent.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "persist parent" }],
+			api: "test",
+			provider: "test",
+			model: "test",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+
+		const child = SessionManager.create(dir, dir);
+		writeThreadMeta(child, {
+			parent_id: "parent-root",
+			thread_id: "child-1",
+			thread_name: "child-1",
+			depth: 1,
+			task: "child task",
+			agent_type: "worker",
+		});
+		child.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "persist child" }],
+			api: "test",
+			provider: "test",
+			model: "test",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+
+		const tree = await buildThreadChildrenMap(dir, dir);
+		expect([...(tree.get("parent-root") ?? [])]).toEqual(["child-1"]);
 	});
 
 	it("extractThreadOutput skips bootstrap stub and returns last assistant text", () => {

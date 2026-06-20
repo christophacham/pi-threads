@@ -11,11 +11,13 @@ import {
 	emitThreadInterruptedTranscript,
 	emitThreadWaitTranscript,
 	extractThreadOutput,
+	buildThreadChildrenMap,
 	findFirstThreadMeta,
 	findLatestThreadCompleted,
 	findThreadSessionById,
 	formatInterAgentMessage,
 	listThreadSessions,
+	shouldResumeThreadSession,
 	THREAD_SESSION_BOOTSTRAP_TEXT,
 	writeThreadCompleted,
 	writeThreadMeta,
@@ -272,6 +274,7 @@ export async function pollThreadCompletions(
 
 export class ThreadManager {
 	private readonly threads = new Map<ThreadId, ThreadRecord>();
+	private threadChildren = new Map<string, Set<ThreadId>>();
 	private readonly spawner: ThreadSubprocessSpawner;
 	private readonly sleep: (ms: number) => Promise<void>;
 	private ctx: ExtensionContext | null = null;
@@ -290,6 +293,10 @@ export class ThreadManager {
 
 	getActiveThreads(): ReadonlyMap<ThreadId, ThreadRecord> {
 		return this.threads;
+	}
+
+	getThreadChildren(parentId: string): ThreadId[] {
+		return [...(this.threadChildren.get(parentId) ?? [])];
 	}
 
 	getStatusFeed(maxLines = STATUS_FEED_MAX_LINES): StatusFeedEntry[] {
@@ -575,12 +582,12 @@ export class ThreadManager {
 
 	async resume(ctx: ExtensionContext): Promise<ResumeResult> {
 		const sessions = await listThreadSessions(ctx.cwd);
-		const incomplete = sessions.filter((session) => !session.completion);
+		const incomplete = sessions.filter(shouldResumeThreadSession);
+		this.threadChildren = await buildThreadChildrenMap(ctx.cwd);
 
 		let resumedCount = 0;
 		for (const session of incomplete) {
 			if (this.threads.has(session.meta.thread_id)) continue;
-			if (session.completion) continue;
 
 			const record: ThreadRecord = {
 				process: null,
@@ -611,7 +618,7 @@ export class ThreadManager {
 
 		if (incomplete.length > 0) {
 			ctx.ui.notify(
-				`pi-threads: ${incomplete.length} incomplete thread session(s); resumed ${resumedCount} (full resumption: pi-threads-rf0)`,
+				`pi-threads: resumed ${resumedCount} of ${incomplete.length} incomplete thread session(s)`,
 				"info",
 			);
 		}
