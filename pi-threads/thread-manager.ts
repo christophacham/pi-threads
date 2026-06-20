@@ -3,8 +3,10 @@ import type { Usage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import {
+	appendInterAgentUserMessage,
 	createThreadClosedActivity,
 	createThreadInterruptedActivity,
+	createThreadSendActivity,
 	createThreadSpawnedActivity,
 	createThreadWaitActivity,
 	emitThreadClosedTranscript,
@@ -21,6 +23,7 @@ import {
 	THREAD_SESSION_BOOTSTRAP_TEXT,
 	writeThreadCompleted,
 	writeThreadMeta,
+	writeThreadSendDual,
 	writeThreadSpawnedDual,
 } from "./persistence.ts";
 import {
@@ -36,8 +39,6 @@ import {
 	type RingBuffer,
 } from "./thread-subprocess.ts";
 import type { ThreadCompletedStatus, ThreadId, ThreadMetaData } from "./types.ts";
-
-const NOT_IMPLEMENTED = "Not implemented — see pi-threads-8lo";
 
 export type ThreadRuntimeStatus = ThreadCompletedStatus | "running";
 
@@ -158,10 +159,6 @@ export interface ThreadSubprocessSpawner {
 export interface ThreadManagerDeps {
 	spawner?: ThreadSubprocessSpawner;
 	sleep?: (ms: number) => Promise<void>;
-}
-
-function notImplemented(method: string): never {
-	throw new Error(`${NOT_IMPLEMENTED} (${method})`);
 }
 
 function resolveThreadStatus(
@@ -511,8 +508,40 @@ export class ThreadManager {
 		return summaries.filter((summary) => matchesListFilter(summary, params.status));
 	}
 
-	async send(_ctx: ExtensionContext, _params: SendToThreadParams): Promise<SendToThreadResult> {
-		notImplemented("send");
+	async send(ctx: ExtensionContext, params: SendToThreadParams): Promise<SendToThreadResult> {
+		const session = await findThreadSessionById(ctx.cwd, params.thread_id);
+		if (!session) {
+			throw new Error(`Thread not found: ${params.thread_id}`);
+		}
+
+		const record = this.threads.get(params.thread_id);
+		if (!record || record.status !== "running") {
+			throw new Error(`Thread is not running: ${params.thread_id}`);
+		}
+
+		const parentMeta = findFirstThreadMeta(ctx.sessionManager.getEntries());
+		const author = resolveParentAuthor(parentMeta);
+
+		appendInterAgentUserMessage(SessionManager.open(record.sessionFile), {
+			author,
+			recipient: record.threadName,
+			content: params.message,
+		});
+
+		writeThreadSendDual(
+			this.pi,
+			createThreadSendActivity({
+				thread_id: params.thread_id,
+				thread_name: record.threadName,
+				agent_type: record.agent_type,
+				message_preview: params.message,
+			}),
+		);
+
+		return {
+			thread_id: params.thread_id,
+			thread_name: record.threadName,
+		};
 	}
 
 	async interrupt(ctx: ExtensionContext, params: InterruptThreadParams): Promise<InterruptThreadResult> {

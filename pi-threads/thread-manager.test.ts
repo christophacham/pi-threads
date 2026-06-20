@@ -12,8 +12,8 @@ import {
 	writeThreadMeta,
 	writeThreadSpawnedDurable,
 } from "./persistence.ts";
-import { PI_THREADS_EXTENSION_ENTRY } from "./thread-subprocess.ts";
-import { pollThreadCompletions, ThreadManager } from "./thread-manager.ts";
+import { PI_THREADS_EXTENSION_ENTRY, WAIT_POLL_INTERVAL_MS } from "./thread-subprocess.ts";
+import { pollThreadCompletions, ThreadManager, type WaitThreadUpdate } from "./thread-manager.ts";
 import { THREAD_ENTRY_TYPES, THREAD_TRANSCRIPT_TYPES } from "./types.ts";
 
 const TEST_USAGE = {
@@ -563,29 +563,222 @@ describe("ThreadManager", () => {
 		).rejects.toThrow("Timed out waiting for threads: slow-thread");
 	});
 
-	it("wait returns completion status from child session", async () => {
+	it("pollThreadCompletions invokes onPoll between completion checks", async () => {
+		let polls = 0;
+		let reads = 0;
+
+		const result = await pollThreadCompletions(
+			["pending"],
+			() => {
+				reads++;
+				return reads >= 2 ? "completed" : undefined;
+			},
+			{
+				pollIntervalMs: 1,
+				onPoll: () => {
+					polls++;
+				},
+				sleep: async () => {},
+			},
+		);
+
+		expect(result.get("pending")).toBe("completed");
+		expect(polls).toBeGreaterThan(0);
+	});
+
+	function appendAssistantOutput(session: SessionManager, text: string): void {
+		session.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text }],
+			api: "test",
+			provider: "test",
+			model: "test",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+	}
+
+	it("wait meets wait_thread acceptance criteria", async () => {
+		const cwd = createWorkspace();
+		const pi = createMockPi();
+		const manager = new ThreadManager(pi, {
+			sleep: async () => {},
+		});
+		const ctx = createContext(cwd);
+
+		const alpha = trackSession(SessionManager.create(cwd));
+		writeThreadMeta(alpha, {
+			parent_id: "parent-1",
+			thread_id: "thread-alpha",
+			thread_name: "alpha",
+			depth: 1,
+			task: "Task A",
+			agent_type: "worker",
+		});
+		writeThreadCompleted(alpha, { status: "completed" });
+		persistSession(alpha);
+		appendAssistantOutput(alpha, "alpha output");
+
+		const beta = trackSession(SessionManager.create(cwd));
+		writeThreadMeta(beta, {
+			parent_id: "parent-1",
+			thread_id: "thread-beta",
+			thread_name: "beta",
+			depth: 1,
+			task: "Task B",
+			agent_type: "researcher",
+		});
+		writeThreadCompleted(beta, { status: "error" });
+		persistSession(beta);
+		appendAssistantOutput(beta, "beta output");
+
+		const result = await manager.wait(ctx, {
+			thread_ids: ["thread-alpha", "thread-beta"],
+			timeout: 2,
+		});
+
+		expect(result.threads).toHaveLength(2);
+		expect(result.threads).toEqual(
+			expect.arrayContaining([
+				{
+					thread_id: "thread-alpha",
+					thread_name: "alpha",
+					status: "completed",
+					output: "alpha output",
+				},
+				{
+					thread_id: "thread-beta",
+					thread_name: "beta",
+					status: "error",
+					output: "beta output",
+				},
+			]),
+		);
+
+		const waitCalls = vi
+			.mocked(pi.sendMessage)
+			.mock.calls.filter(([message]) => message.customType === THREAD_TRANSCRIPT_TYPES.WAIT);
+
+		expect(waitCalls).toHaveLength(4);
+		expect(waitCalls[0]?.[0]).toMatchObject({
+			customType: THREAD_TRANSCRIPT_TYPES.WAIT,
+			content: "Waiting for alpha: Running",
+			display: true,
+			details: {
+				kind: "Interacted",
+				thread_id: "thread-alpha",
+				thread_name: "alpha",
+				agent_type: "worker",
+				phase: "started",
+				status: "Running",
+			},
+		});
+		expect(waitCalls[1]?.[0]).toMatchObject({
+			content: "Waiting for beta: Running",
+			details: expect.objectContaining({
+				thread_id: "thread-beta",
+				thread_name: "beta",
+				phase: "started",
+			}),
+		});
+		expect(waitCalls[2]?.[0]).toMatchObject({
+			content: "Finished waiting → alpha: completed",
+			details: expect.objectContaining({
+				thread_id: "thread-alpha",
+				phase: "finished",
+				status: "completed",
+			}),
+		});
+		expect(waitCalls[3]?.[0]).toMatchObject({
+			content: "Finished waiting → beta: error",
+			details: expect.objectContaining({
+				thread_id: "thread-beta",
+				phase: "finished",
+				status: "error",
+			}),
+		});
+	});
+
+	it("wait calls onUpdate while polling and uses 500ms poll interval", async () => {
+		const cwd = createWorkspace();
+		const pi = createMockPi();
+		const sleepCalls: number[] = [];
+		let pollCount = 0;
+		const child = createThreadSession(cwd, {
+			thread_id: "thread-poll",
+			thread_name: "runner",
+			task: "Running",
+		});
+		const manager = new ThreadManager(pi, {
+			sleep: async (ms) => {
+				sleepCalls.push(ms);
+				pollCount++;
+				if (pollCount === 1) {
+					writeThreadCompleted(SessionManager.open(child.getSessionFile()!), { status: "completed" });
+				}
+			},
+		});
+		const ctx = createContext(cwd);
+
+		const onUpdates: WaitThreadUpdate[] = [];
+		const result = await manager.wait(
+			ctx,
+			{ thread_ids: ["thread-poll"] },
+			(update) => onUpdates.push(update),
+		);
+
+		expect(onUpdates.length).toBeGreaterThan(0);
+		expect(onUpdates[0]?.waiting).toEqual([
+			{
+				name: "runner",
+				status: "running",
+				lastActivity: undefined,
+			},
+		]);
+		expect(sleepCalls).toContain(WAIT_POLL_INTERVAL_MS);
+		expect(result.threads[0]).toMatchObject({
+			thread_id: "thread-poll",
+			thread_name: "runner",
+			status: "completed",
+		});
+	});
+
+	it("wait times out when threads do not complete", async () => {
 		const cwd = createWorkspace();
 		const manager = new ThreadManager(createMockPi(), {
 			sleep: async () => {},
 		});
 		const ctx = createContext(cwd);
 
-		const child = trackSession(SessionManager.create(cwd));
-		writeThreadMeta(child, {
-			parent_id: "parent-1",
-			thread_id: "thread-wait",
-			thread_name: "worker",
-			depth: 1,
-			task: "Do work",
-			agent_type: "worker",
+		createThreadSession(cwd, {
+			thread_id: "thread-slow",
+			thread_name: "slow",
+			task: "Never finishes",
 		});
-		writeThreadCompleted(child, { status: "completed" });
-		persistSession(child);
 
-		const result = await manager.wait(ctx, { thread_ids: ["thread-wait"], timeout: 1 });
+		await expect(
+			manager.wait(ctx, { thread_ids: ["thread-slow"], timeout: 0.001 }),
+		).rejects.toThrow("Timed out waiting for threads: thread-slow");
+	});
 
-		expect(result.threads).toHaveLength(1);
-		expect(result.threads[0]?.status).toBe("completed");
+	it("wait rejects unknown thread ids", async () => {
+		const cwd = createWorkspace();
+		const manager = new ThreadManager(createMockPi(), {
+			sleep: async () => {},
+		});
+		const ctx = createContext(cwd);
+
+		await expect(manager.wait(ctx, { thread_ids: ["missing-thread"] })).rejects.toThrow(
+			"Thread not found: missing-thread",
+		);
 	});
 
 	it("interrupt meets interrupt_thread acceptance criteria", async () => {
