@@ -9,9 +9,8 @@ export * from "./thread-manager.ts";
 export { registerThreadRenderers, getTranscriptContent } from "./renderers.ts";
 export { registerThreadTools } from "./tools/index.ts";
 
-const threadManager = new ThreadManager();
-
 export default function (pi: ExtensionAPI) {
+	const threadManager = new ThreadManager(pi);
 	registerThreadRenderers(pi);
 	registerThreadTools(pi, threadManager);
 

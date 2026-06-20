@@ -122,6 +122,37 @@ export interface ThreadSessionInfo {
 	completion?: ThreadCompletedData;
 }
 
+/** Find a thread session by thread_id within a workspace. */
+export async function findThreadSessionById(
+	cwd: string,
+	threadId: string,
+	sessionDir?: string,
+): Promise<ThreadSessionInfo | undefined> {
+	const sessions = await listThreadSessions(cwd, sessionDir);
+	return sessions.find((session) => session.meta.thread_id === threadId);
+}
+
+/** Extract the last assistant text output from a thread session. */
+export function extractThreadOutput(entries: SessionEntry[]): string | undefined {
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
+		if (entry.type !== "message") continue;
+		const message = entry.message;
+		if (message.role !== "assistant") continue;
+
+		const parts: string[] = [];
+		for (const block of message.content) {
+			if (block.type === "text" && block.text.trim()) {
+				parts.push(block.text);
+			}
+		}
+		if (parts.length > 0) {
+			return parts.join("\n");
+		}
+	}
+	return undefined;
+}
+
 /** Scan SessionManager.list() results and return sessions with thread_meta entries. */
 export async function listThreadSessions(
 	cwd: string,
