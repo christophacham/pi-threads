@@ -1,6 +1,7 @@
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { ThreadManager } from "../thread-manager.ts";
+import { renderSpawnThreadCall, renderSpawnThreadResult } from "../tool-render.ts";
 import { runTool } from "./common.ts";
 
 const ForkTurnsSchema = Type.Union([
@@ -47,6 +48,8 @@ export function registerSpawnThreadTool(pi: ExtensionAPI, manager: ThreadManager
 			description:
 				"Create a persistent subagent thread with an isolated pi session and subprocess. Returns thread_id and thread_name.",
 			parameters: SpawnThreadParams,
+			renderCall: renderSpawnThreadCall,
+			renderResult: renderSpawnThreadResult,
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 				return runTool(
 					() => manager.spawn(ctx, params),

@@ -2,6 +2,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { ThreadManager } from "../thread-manager.ts";
+import { renderListThreadsCall, renderListThreadsResult } from "../tool-render.ts";
 import { runTool } from "./common.ts";
 
 const ListThreadsParams = Type.Object({
@@ -21,20 +22,22 @@ export function registerListThreadsTool(pi: ExtensionAPI, manager: ThreadManager
 			description:
 				"Enumerate subagent thread sessions with status, task summary, and usage. Archived (closed) threads are hidden by default.",
 			parameters: ListThreadsParams,
+			renderCall: renderListThreadsCall,
+			renderResult: renderListThreadsResult,
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 				return runTool(
-					() => manager.list(ctx, params),
-					(threads) => ({
+					async () => ({ threads: await manager.list(ctx, params) }),
+					(result) => ({
 						content: [
 							{
 								type: "text",
 								text:
-									threads.length === 0
+									result.threads.length === 0
 										? "No threads match the requested filter."
-										: JSON.stringify(threads, null, 2),
+										: JSON.stringify(result.threads, null, 2),
 							},
 						],
-						details: { threads },
+						details: result,
 					}),
 				);
 			},

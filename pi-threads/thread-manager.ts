@@ -72,6 +72,8 @@ export interface SpawnThreadParams {
 export interface SpawnThreadResult {
 	thread_id: ThreadId;
 	thread_name: string;
+	agent_type: string;
+	task: string;
 }
 
 export interface WaitThreadParams {
@@ -79,21 +81,23 @@ export interface WaitThreadParams {
 	timeout?: number;
 }
 
+export interface WaitThreadItem {
+	thread_id: ThreadId;
+	thread_name: string;
+	agent_type: string;
+	task: string;
+	status: ThreadRuntimeStatus | ThreadCompletedStatus;
+	activities?: string[];
+	output?: string;
+	usage?: Usage;
+}
+
 export interface WaitThreadUpdate {
-	waiting: Array<{
-		name: string;
-		status: string;
-		lastActivity?: string;
-	}>;
+	waiting: WaitThreadItem[];
 }
 
 export interface WaitThreadResult {
-	threads: Array<{
-		thread_id: ThreadId;
-		thread_name: string;
-		status: ThreadCompletedStatus;
-		output?: string;
-	}>;
+	threads: WaitThreadItem[];
 }
 
 export interface SendToThreadParams {
@@ -392,6 +396,8 @@ export class ThreadManager {
 		return {
 			thread_id: threadId,
 			thread_name: params.thread_name,
+			agent_type: params.agent_type,
+			task: params.task,
 		};
 	}
 
@@ -450,11 +456,13 @@ export class ThreadManager {
 							const active = this.threads.get(threadId);
 							const manager = SessionManager.open(session.path);
 							const completion = findLatestThreadCompleted(manager.getEntries());
-							const feedLine = this.getStatusFeed(1).find((entry) => entry.thread_id === threadId)?.lines.at(-1);
 							return {
-								name: session.meta.thread_name,
+								thread_id: threadId,
+								thread_name: session.meta.thread_name,
+								agent_type: session.meta.agent_type,
+								task: session.meta.task,
 								status: completion?.status ?? active?.status ?? "running",
-								lastActivity: feedLine,
+								activities: active ? getRingBufferTail(active.activityBuffer, 8) : [],
 							};
 						}),
 					});
@@ -467,7 +475,10 @@ export class ThreadManager {
 			const status = completions.get(threadId) ?? "error";
 			const manager = SessionManager.open(session.path);
 			const entries = manager.getEntries();
+			const completion = findLatestThreadCompleted(entries);
 			const output = extractThreadOutput(entries);
+			const active = this.threads.get(threadId);
+			const activities = active ? [...active.activityBuffer.lines] : [];
 
 			emitThreadWaitTranscript(
 				this.pi,
@@ -485,8 +496,12 @@ export class ThreadManager {
 			return {
 				thread_id: threadId,
 				thread_name: session.meta.thread_name,
+				agent_type: session.meta.agent_type,
+				task: session.meta.task,
 				status,
+				activities,
 				output,
+				usage: completion?.usage,
 			};
 		});
 

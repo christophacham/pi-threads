@@ -2,6 +2,7 @@ import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { clearStatusFeedWidget, updateStatusFeedWidget } from "../status-feed.ts";
 import type { ThreadManager } from "../thread-manager.ts";
+import { renderWaitThreadCall, renderWaitThreadResult } from "../tool-render.ts";
 import { runTool } from "./common.ts";
 
 const WaitThreadParams = Type.Object({
@@ -24,6 +25,8 @@ export function registerWaitThreadTool(pi: ExtensionAPI, manager: ThreadManager)
 			description:
 				"Block until one or more subagent threads complete, streaming per-thread status via onUpdate.",
 			parameters: WaitThreadParams,
+			renderCall: renderWaitThreadCall,
+			renderResult: renderWaitThreadResult,
 			async execute(_toolCallId, params, _signal, onUpdate, ctx) {
 				return runTool(
 					async () => {
@@ -39,7 +42,7 @@ export function registerWaitThreadTool(pi: ExtensionAPI, manager: ThreadManager)
 											{
 												type: "text",
 												text: update.waiting
-													.map((item) => `${item.name}: ${item.status}`)
+													.map((item) => `${item.thread_name}: ${item.status}`)
 													.join("\n"),
 											},
 										],

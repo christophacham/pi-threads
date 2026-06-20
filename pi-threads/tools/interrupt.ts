@@ -1,6 +1,7 @@
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { ThreadManager } from "../thread-manager.ts";
+import { renderInterruptThreadCall, renderInterruptThreadResult } from "../tool-render.ts";
 import { runTool } from "./common.ts";
 
 const InterruptThreadParams = Type.Object({
@@ -17,6 +18,8 @@ export function registerInterruptThreadTool(pi: ExtensionAPI, manager: ThreadMan
 			description:
 				"Force-stop a running subagent thread subprocess and mark it as aborted in the session.",
 			parameters: InterruptThreadParams,
+			renderCall: renderInterruptThreadCall,
+			renderResult: renderInterruptThreadResult,
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 				return runTool(
 					() => manager.interrupt(ctx, params),

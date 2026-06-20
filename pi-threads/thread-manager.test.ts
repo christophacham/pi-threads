@@ -422,6 +422,8 @@ describe("ThreadManager", () => {
 		expect(result).toEqual({
 			thread_id: expect.any(String),
 			thread_name: "researcher",
+			agent_type: "researcher",
+			task: "Research auth",
 		});
 		expect(manager.getActiveThreads().has(result.thread_id)).toBe(true);
 
@@ -707,18 +709,20 @@ describe("ThreadManager", () => {
 		expect(result.threads).toHaveLength(2);
 		expect(result.threads).toEqual(
 			expect.arrayContaining([
-				{
+				expect.objectContaining({
 					thread_id: "thread-alpha",
 					thread_name: "alpha",
 					status: "completed",
 					output: "alpha output",
-				},
-				{
+					task: "Task A",
+				}),
+				expect.objectContaining({
 					thread_id: "thread-beta",
 					thread_name: "beta",
 					status: "error",
 					output: "beta output",
-				},
+					task: "Task B",
+				}),
 			]),
 		);
 
@@ -797,9 +801,12 @@ describe("ThreadManager", () => {
 		expect(onUpdates.length).toBeGreaterThan(0);
 		expect(onUpdates[0]?.waiting).toEqual([
 			{
-				name: "runner",
+				thread_id: "thread-poll",
+				thread_name: "runner",
+				agent_type: "worker",
+				task: "Running",
 				status: "running",
-				lastActivity: undefined,
+				activities: [],
 			},
 		]);
 		expect(sleepCalls).toContain(WAIT_POLL_INTERVAL_MS);
