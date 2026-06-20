@@ -132,6 +132,9 @@ export async function findThreadSessionById(
 	return sessions.find((session) => session.meta.thread_id === threadId);
 }
 
+/** Bootstrap assistant message written so Pi persists the child session file. */
+export const THREAD_SESSION_BOOTSTRAP_TEXT = "thread session initialized";
+
 /** Extract the last assistant text output from a thread session. */
 export function extractThreadOutput(entries: SessionEntry[]): string | undefined {
 	for (let i = entries.length - 1; i >= 0; i--) {
@@ -146,9 +149,12 @@ export function extractThreadOutput(entries: SessionEntry[]): string | undefined
 				parts.push(block.text);
 			}
 		}
-		if (parts.length > 0) {
-			return parts.join("\n");
-		}
+		if (parts.length === 0) continue;
+
+		const text = parts.join("\n");
+		if (text.trim() === THREAD_SESSION_BOOTSTRAP_TEXT) continue;
+
+		return text;
 	}
 	return undefined;
 }

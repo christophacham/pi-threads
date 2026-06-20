@@ -44,7 +44,7 @@ describe("ThreadManager", () => {
 		} as unknown as ExtensionAPI;
 	}
 
-	function createMockProcess(): ChildProcess {
+	function createMockProcess(options?: { exitImmediately?: boolean; exitCode?: number }): ChildProcess {
 		const eventHandlers = new Map<string, Array<(...args: unknown[]) => void>>();
 		const proc = {
 			stdout: { on: vi.fn() },
@@ -53,6 +53,9 @@ describe("ThreadManager", () => {
 				const handlers = eventHandlers.get(event) ?? [];
 				handlers.push(handler);
 				eventHandlers.set(event, handlers);
+				if (options?.exitImmediately && event === "exit") {
+					handler(options.exitCode ?? 0);
+				}
 			}),
 			once: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
 				const wrapped = (...args: unknown[]) => {
@@ -308,6 +311,113 @@ describe("ThreadManager", () => {
 			mod.findThreadSessionById(cwd, spawned.thread_id),
 		);
 		expect(session?.completion?.status).toBe("aborted");
+	});
+
+	it("registers active thread before subprocess handlers attach", async () => {
+		const cwd = createWorkspace();
+		const mockProcess = createMockProcess();
+		const manager = new ThreadManager(createMockPi(), {
+			spawner: {
+				spawn: vi.fn(() => mockProcess),
+			},
+		});
+		let recordVisibleOnExit = false;
+		const eventHandlers = new Map<string, Array<(...args: unknown[]) => void>>();
+		(mockProcess.on as ReturnType<typeof vi.fn>).mockImplementation(
+			(event: string, handler: (...args: unknown[]) => void) => {
+				const handlers = eventHandlers.get(event) ?? [];
+				handlers.push(handler);
+				eventHandlers.set(event, handlers);
+				if (event === "exit") {
+					recordVisibleOnExit = manager.getActiveThreads().size > 0;
+					handler(0);
+				}
+			},
+		);
+		const ctx = createContext(cwd);
+
+		await manager.spawn(ctx, {
+			task: "Fast exit",
+			thread_name: "fast",
+			agent_type: "worker",
+		});
+
+		expect(recordVisibleOnExit).toBe(true);
+	});
+
+	it("writes thread_completed when subprocess exits immediately", async () => {
+		const cwd = createWorkspace();
+		const mockProcess = createMockProcess({ exitImmediately: true, exitCode: 0 });
+		const manager = new ThreadManager(createMockPi(), {
+			spawner: {
+				spawn: vi.fn(() => mockProcess),
+			},
+		});
+		const ctx = createContext(cwd);
+
+		const result = await manager.spawn(ctx, {
+			task: "Fast exit",
+			thread_name: "fast",
+			agent_type: "worker",
+		});
+
+		await vi.waitFor(() => {
+			const sessions = SessionManager.list(cwd);
+			return sessions.then((listed) => {
+				const session = listed.find((item) => item.id === result.thread_id);
+				if (!session) return false;
+				const manager = SessionManager.open(session.path);
+				return findLatestThreadCompleted(manager.getEntries())?.status === "completed";
+			});
+		});
+
+		const session = (await SessionManager.list(cwd)).find((item) => item.id === result.thread_id);
+		expect(session).toBeTruthy();
+		const childSession = SessionManager.open(session!.path);
+		expect(findLatestThreadCompleted(childSession.getEntries())?.status).toBe("completed");
+		expect(manager.getActiveThreads().has(result.thread_id)).toBe(false);
+	});
+
+	it("close rejects actively running threads", async () => {
+		const cwd = createWorkspace();
+		const manager = new ThreadManager(createMockPi(), {
+			spawner: {
+				spawn: vi.fn(() => createMockProcess()),
+			},
+		});
+		const ctx = createContext(cwd);
+
+		const spawned = await manager.spawn(ctx, {
+			task: "Still running",
+			thread_name: "runner",
+			agent_type: "worker",
+		});
+
+		await expect(manager.close(ctx, { thread_id: spawned.thread_id })).rejects.toThrow(
+			"Thread is still running",
+		);
+	});
+
+	it("close rejects threads that are not completed", async () => {
+		const cwd = createWorkspace();
+		const manager = new ThreadManager(createMockPi());
+		const ctx = createContext(cwd);
+
+		const errored = trackSession(SessionManager.create(cwd));
+		writeThreadMeta(errored, {
+			parent_id: "parent-1",
+			thread_id: "thread-error",
+			thread_name: "failed",
+			depth: 1,
+			task: "Failed task",
+			agent_type: "worker",
+		});
+		writeThreadCompleted(errored, { status: "error" });
+		persistSession(errored);
+
+		await expect(manager.close(ctx, { thread_id: "thread-error" })).rejects.toThrow(
+			"Thread is not completed",
+		);
 	});
 
 	it("close archives completed thread sessions", async () => {

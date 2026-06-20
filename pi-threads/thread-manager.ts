@@ -16,6 +16,7 @@ import {
 	findThreadSessionById,
 	formatInterAgentMessage,
 	listThreadSessions,
+	THREAD_SESSION_BOOTSTRAP_TEXT,
 	writeThreadCompleted,
 	writeThreadMeta,
 	writeThreadSpawnedDual,
@@ -209,7 +210,7 @@ function delay(ms: number): Promise<void> {
 function persistThreadSession(session: SessionManager): void {
 	session.appendMessage({
 		role: "assistant",
-		content: [{ type: "text", text: "thread session initialized" }],
+		content: [{ type: "text", text: THREAD_SESSION_BOOTSTRAP_TEXT }],
 		api: "pi-threads",
 		provider: "pi-threads",
 		model: "pi-threads",
@@ -337,7 +338,20 @@ export class ThreadManager {
 			content: params.task,
 		});
 
-		const process = this.startSubprocess({
+		const record: ThreadRecord = {
+			process: null,
+			sessionFile,
+			threadName: params.thread_name,
+			status: "running",
+			agent_type: params.agent_type,
+			depth,
+			task: params.task,
+			stdoutBuffer: createRingBuffer(OUTPUT_RING_BUFFER_SIZE),
+			stderrBuffer: createRingBuffer(OUTPUT_RING_BUFFER_SIZE),
+		};
+		this.threads.set(threadId, record);
+
+		record.process = this.startSubprocess({
 			sessionFile,
 			prompt,
 			model: params.model,
@@ -366,18 +380,6 @@ export class ThreadManager {
 				task: params.task,
 			}),
 		);
-
-		this.threads.set(threadId, {
-			process,
-			sessionFile,
-			threadName: params.thread_name,
-			status: "running",
-			agent_type: params.agent_type,
-			depth,
-			task: params.task,
-			stdoutBuffer: createRingBuffer(OUTPUT_RING_BUFFER_SIZE),
-			stderrBuffer: createRingBuffer(OUTPUT_RING_BUFFER_SIZE),
-		});
 
 		return {
 			thread_id: threadId,
@@ -536,14 +538,18 @@ export class ThreadManager {
 	}
 
 	async close(ctx: ExtensionContext, params: CloseThreadParams): Promise<CloseThreadResult> {
-		const active = this.threads.get(params.thread_id);
-		if (active?.status === "running") {
+		if (this.threads.has(params.thread_id)) {
 			throw new Error(`Thread is still running; use interrupt_thread instead: ${params.thread_id}`);
 		}
 
 		const session = await findThreadSessionById(ctx.cwd, params.thread_id);
 		if (!session) {
 			throw new Error(`Thread not found: ${params.thread_id}`);
+		}
+
+		if (session.completion?.status !== "completed") {
+			const status = session.completion?.status ?? "running";
+			throw new Error(`Thread is not completed; cannot close: ${params.thread_id} (status: ${status})`);
 		}
 
 		const childSession = SessionManager.open(session.path);
@@ -576,7 +582,20 @@ export class ThreadManager {
 			if (this.threads.has(session.meta.thread_id)) continue;
 			if (session.completion) continue;
 
-			const process = this.startSubprocess({
+			const record: ThreadRecord = {
+				process: null,
+				sessionFile: session.path,
+				threadName: session.meta.thread_name,
+				status: "running",
+				agent_type: session.meta.agent_type,
+				depth: session.meta.depth,
+				task: session.meta.task,
+				stdoutBuffer: createRingBuffer(OUTPUT_RING_BUFFER_SIZE),
+				stderrBuffer: createRingBuffer(OUTPUT_RING_BUFFER_SIZE),
+			};
+			this.threads.set(session.meta.thread_id, record);
+
+			record.process = this.startSubprocess({
 				sessionFile: session.path,
 				prompt: "",
 				cwd: ctx.cwd,
@@ -586,18 +605,6 @@ export class ThreadManager {
 				depth: session.meta.depth,
 				task: session.meta.task,
 				resume: true,
-			});
-
-			this.threads.set(session.meta.thread_id, {
-				process,
-				sessionFile: session.path,
-				threadName: session.meta.thread_name,
-				status: "running",
-				agent_type: session.meta.agent_type,
-				depth: session.meta.depth,
-				task: session.meta.task,
-				stdoutBuffer: createRingBuffer(OUTPUT_RING_BUFFER_SIZE),
-				stderrBuffer: createRingBuffer(OUTPUT_RING_BUFFER_SIZE),
 			});
 			resumedCount++;
 		}

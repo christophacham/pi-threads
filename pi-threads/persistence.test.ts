@@ -7,9 +7,11 @@ import {
 	createThreadSpawnedActivity,
 	emitThreadSpawnedTranscript,
 	findAllThreadSpawned,
+	extractThreadOutput,
 	findFirstThreadMeta,
 	findLatestThreadCompleted,
 	formatInterAgentMessage,
+	THREAD_SESSION_BOOTSTRAP_TEXT,
 	isThreadSession,
 	listThreadSessions,
 	parseInterAgentMessage,
@@ -199,6 +201,46 @@ describe("thread session entries", () => {
 		const listed = await listThreadSessions(dir, dir);
 		expect(listed).toHaveLength(1);
 		expect(listed[0].meta.thread_name).toBe("worker");
+	});
+
+	it("extractThreadOutput skips bootstrap stub and returns last assistant text", () => {
+		const sm = createSessionManager();
+		sm.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: THREAD_SESSION_BOOTSTRAP_TEXT }],
+			api: "test",
+			provider: "test",
+			model: "test",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+		sm.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "real thread output" }],
+			api: "test",
+			provider: "test",
+			model: "test",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+
+		expect(extractThreadOutput(sm.getEntries())).toBe("real thread output");
 	});
 
 	it("emitThreadSpawnedTranscript sends inline event", () => {
