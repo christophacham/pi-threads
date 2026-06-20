@@ -82,6 +82,20 @@ function getFallbackText(toolResult: AgentToolResult<unknown>): string {
 	return "(no output)";
 }
 
+type AgentToolResultWithError<T> = AgentToolResult<T> & { isError?: boolean };
+
+function isToolResultError<T>(
+	toolResult: AgentToolResult<T>,
+	context?: { isError?: boolean },
+): boolean {
+	const result = toolResult as AgentToolResultWithError<T>;
+	return Boolean(result.isError || context?.isError);
+}
+
+function renderErrorFallback(toolResult: AgentToolResult<unknown>): Text {
+	return new Text(getFallbackText(toolResult), 0, 0);
+}
+
 function statusIcon(status: ThreadToolStatus, fg: Theme["fg"]): string {
 	const indicator = resolveStatusFeedIndicator(status);
 	return fg(
@@ -166,17 +180,21 @@ export function sortThreadsTree(threads: ThreadSummary[]): ThreadSummary[] {
 	const roots: ThreadSummary[] = [];
 
 	for (const thread of threads) {
-		if (!byId.has(thread.parent_id)) {
+		const parentId = thread.parent_id;
+		if (!parentId || parentId === thread.thread_id || !byId.has(parentId)) {
 			roots.push(thread);
 			continue;
 		}
-		const list = children.get(thread.parent_id) ?? [];
+		const list = children.get(parentId) ?? [];
 		list.push(thread);
-		children.set(thread.parent_id, list);
+		children.set(parentId, list);
 	}
 
 	const sorted: ThreadSummary[] = [];
+	const visited = new Set<string>();
 	const visit = (node: ThreadSummary) => {
+		if (visited.has(node.thread_id)) return;
+		visited.add(node.thread_id);
 		sorted.push(node);
 		const childList = (children.get(node.thread_id) ?? []).sort((a, b) =>
 			a.thread_name.localeCompare(b.thread_name),
@@ -187,6 +205,13 @@ export function sortThreadsTree(threads: ThreadSummary[]): ThreadSummary[] {
 	for (const root of roots.sort((a, b) => a.thread_name.localeCompare(b.thread_name))) {
 		visit(root);
 	}
+
+	for (const thread of threads) {
+		if (!visited.has(thread.thread_id)) {
+			visit(thread);
+		}
+	}
+
 	return sorted;
 }
 
@@ -213,11 +238,13 @@ export function renderSpawnThreadResult(
 	toolResult: AgentToolResult<SpawnThreadResult>,
 	{ expanded }: { expanded: boolean },
 	theme: Theme,
-	context: { args: SpawnThreadParams },
+	context: { args: SpawnThreadParams; isError?: boolean },
 ) {
+	if (isToolResultError(toolResult, context)) return renderErrorFallback(toolResult);
+
 	const result = toolResult.details;
 	const fg = theme.fg.bind(theme);
-	if (!result) return new Text(getFallbackText(toolResult), 0, 0);
+	if (!result) return renderErrorFallback(toolResult);
 
 	const task = result.task ?? context.args.task;
 	const icon = statusIcon("running", fg);
@@ -254,10 +281,13 @@ export function renderWaitThreadResult(
 	toolResult: AgentToolResult<WaitThreadResult | { waiting: WaitThreadItem[] }>,
 	{ expanded, isPartial }: { expanded: boolean; isPartial: boolean },
 	theme: Theme,
+	context?: { isError?: boolean },
 ) {
+	if (isToolResultError(toolResult, context)) return renderErrorFallback(toolResult);
+
 	const fg = theme.fg.bind(theme);
 	const details = toolResult.details;
-	if (!details) return new Text(getFallbackText(toolResult), 0, 0);
+	if (!details) return renderErrorFallback(toolResult);
 
 	const threads = "threads" in details ? details.threads : details.waiting;
 	if (!Array.isArray(threads) || threads.length === 0) {
@@ -327,10 +357,13 @@ export function renderListThreadsResult(
 	toolResult: AgentToolResult<{ threads: ThreadSummary[] }>,
 	{ expanded }: { expanded: boolean },
 	theme: Theme,
+	context?: { isError?: boolean },
 ) {
+	if (isToolResultError(toolResult, context)) return renderErrorFallback(toolResult);
+
 	const fg = theme.fg.bind(theme);
 	const threads = toolResult.details?.threads;
-	if (!Array.isArray(threads)) return new Text(getFallbackText(toolResult), 0, 0);
+	if (!Array.isArray(threads)) return renderErrorFallback(toolResult);
 	if (threads.length === 0) return new Text(fg("muted", "No threads match the requested filter."), 0, 0);
 
 	const tree = sortThreadsTree(threads);
@@ -371,10 +404,13 @@ export function renderSendToThreadResult(
 	toolResult: AgentToolResult<SendToThreadResult>,
 	_options: { expanded: boolean; isPartial: boolean },
 	theme: Theme,
+	context?: { isError?: boolean },
 ) {
+	if (isToolResultError(toolResult, context)) return renderErrorFallback(toolResult);
+
 	const result = toolResult.details;
 	const fg = theme.fg.bind(theme);
-	if (!result) return new Text(getFallbackText(toolResult), 0, 0);
+	if (!result) return renderErrorFallback(toolResult);
 	const icon = statusIcon("running", fg);
 	const text = `${icon} ${fg("toolTitle", theme.bold("sent"))} ${fg("accent", result.thread_name)} ${fg("dim", `(${result.thread_id})`)}`;
 	return new Text(text, 0, 0);
@@ -390,10 +426,13 @@ export function renderInterruptThreadResult(
 	toolResult: AgentToolResult<InterruptThreadResult>,
 	_options: { expanded: boolean; isPartial: boolean },
 	theme: Theme,
+	context?: { isError?: boolean },
 ) {
+	if (isToolResultError(toolResult, context)) return renderErrorFallback(toolResult);
+
 	const result = toolResult.details;
 	const fg = theme.fg.bind(theme);
-	if (!result) return new Text(getFallbackText(toolResult), 0, 0);
+	if (!result) return renderErrorFallback(toolResult);
 	const icon = statusIcon("aborted", fg);
 	const text = `${icon} ${fg("toolTitle", theme.bold("interrupted"))} ${fg("accent", result.thread_name)} ${fg("dim", `(${result.thread_id})`)}`;
 	return new Text(text, 0, 0);
@@ -409,10 +448,13 @@ export function renderCloseThreadResult(
 	toolResult: AgentToolResult<CloseThreadResult>,
 	_options: { expanded: boolean; isPartial: boolean },
 	theme: Theme,
+	context?: { isError?: boolean },
 ) {
+	if (isToolResultError(toolResult, context)) return renderErrorFallback(toolResult);
+
 	const result = toolResult.details;
 	const fg = theme.fg.bind(theme);
-	if (!result) return new Text(getFallbackText(toolResult), 0, 0);
+	if (!result) return renderErrorFallback(toolResult);
 	const icon = statusIcon("closed", fg);
 	const text = `${icon} ${fg("toolTitle", theme.bold("closed"))} ${fg("accent", result.thread_name)} ${fg("dim", `(${result.thread_id})`)}`;
 	return new Text(text, 0, 0);

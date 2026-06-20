@@ -1,10 +1,26 @@
-import type { Theme } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, Theme } from "@earendil-works/pi-coding-agent";
+import type { Component } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
-import type { ThreadSummary, WaitThreadItem } from "./thread-manager.ts";
+import type {
+	CloseThreadResult,
+	InterruptThreadResult,
+	SendToThreadResult,
+	SpawnThreadResult,
+	ThreadSummary,
+	WaitThreadItem,
+	WaitThreadResult,
+} from "./thread-manager.ts";
+import { toolError } from "./tools/common.ts";
 import {
 	fmtThreadUsage,
 	formatListThreadLine,
 	formatSpawnScope,
+	renderCloseThreadResult,
+	renderInterruptThreadResult,
+	renderListThreadsResult,
+	renderSendToThreadResult,
+	renderSpawnThreadResult,
+	renderWaitThreadResult,
 	sortThreadsTree,
 } from "./tool-render.ts";
 
@@ -15,6 +31,10 @@ function createTheme(): Theme {
 		bg: (_color: string, text: string) => text,
 		bold: (text: string) => `**${text}**`,
 	} as unknown as Theme;
+}
+
+function renderComponentText(component: Component, width = 120): string {
+	return component.render(width).join("\n");
 }
 
 describe("tool-render helpers", () => {
@@ -30,6 +50,29 @@ describe("tool-render helpers", () => {
 				cwd: "/home/user/proj",
 			}),
 		).toBe("fork:3 tools:read,bash model:claude-sonnet cwd:~/proj");
+	});
+
+	it("promotes orphan and cyclic threads instead of dropping them from tree order", () => {
+		const threads: ThreadSummary[] = [
+			{
+				thread_id: "alpha",
+				thread_name: "alpha",
+				parent_id: "beta",
+				depth: 2,
+				status: "running",
+				task: "alpha task",
+			},
+			{
+				thread_id: "beta",
+				thread_name: "beta",
+				parent_id: "alpha",
+				depth: 2,
+				status: "completed",
+				task: "beta task",
+			},
+		];
+
+		expect(sortThreadsTree(threads).map((thread) => thread.thread_id)).toEqual(["alpha", "beta"]);
 	});
 
 	it("sorts threads into depth-first tree order", () => {
@@ -102,6 +145,58 @@ describe("tool-render helpers", () => {
 				"claude-sonnet",
 			),
 		).toBe("↑1.2k ↓340 $0.0042 claude-sonnet");
+	});
+
+	it("renderResult handlers return fallback text on tool errors", () => {
+		const theme = createTheme();
+		const errorMessage = "Thread abc123 not found";
+		const errorResult = toolError(errorMessage) as AgentToolResult<unknown>;
+		const spawnArgs = {
+			task: "scan repo",
+			thread_name: "worker",
+			agent_type: "researcher",
+		};
+
+		const cases = [
+			renderSpawnThreadResult(errorResult as AgentToolResult<SpawnThreadResult>, { expanded: false }, theme, {
+				args: spawnArgs,
+				isError: true,
+			}),
+			renderWaitThreadResult(
+				errorResult as AgentToolResult<WaitThreadResult | { waiting: WaitThreadItem[] }>,
+				{ expanded: false, isPartial: false },
+				theme,
+				{ isError: true },
+			),
+			renderListThreadsResult(errorResult as AgentToolResult<{ threads: ThreadSummary[] }>, { expanded: false }, theme, {
+				isError: true,
+			}),
+			renderSendToThreadResult(errorResult as AgentToolResult<SendToThreadResult>, { expanded: false, isPartial: false }, theme, {
+				isError: true,
+			}),
+			renderInterruptThreadResult(
+				errorResult as AgentToolResult<InterruptThreadResult>,
+				{ expanded: false, isPartial: false },
+				theme,
+				{ isError: true },
+			),
+			renderCloseThreadResult(errorResult as AgentToolResult<CloseThreadResult>, { expanded: false, isPartial: false }, theme, {
+				isError: true,
+			}),
+		];
+
+		for (const component of cases) {
+			expect(renderComponentText(component)).toContain(errorMessage);
+		}
+
+		const spawnViaToolResultFlag = renderSpawnThreadResult(
+			toolError("spawn failed") as AgentToolResult<SpawnThreadResult>,
+			{ expanded: true },
+			theme,
+			{ args: spawnArgs },
+		);
+		expect(renderComponentText(spawnViaToolResultFlag)).toContain("spawn failed");
+		expect(renderComponentText(spawnViaToolResultFlag)).not.toContain("spawned");
 	});
 
 	it("models wait thread item shape used by renderers", () => {
