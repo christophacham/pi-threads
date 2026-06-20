@@ -1,0 +1,6 @@
+commit-msg:
+  commands:
+    no-co-author:
+      run: "! grep -qi 'co-authored-by' {1}"
+    no-ai-mentions:
+      run: "! grep -qiE '\\b(copilot|claude|opus|sonnet|haiku|anthropic)\\b' {1}"
