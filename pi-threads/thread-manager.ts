@@ -2,6 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import type { Usage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { forkParentContextIntoChild } from "./context-fork.ts";
 import {
 	appendInterAgentUserMessage,
 	createThreadClosedActivity,
@@ -334,6 +335,7 @@ export class ThreadManager {
 			task: params.task,
 			agent_type: params.agent_type,
 		});
+		forkParentContextIntoChild(ctx.sessionManager, childSession, params.fork_turns ?? "none");
 		persistThreadSession(childSession);
 
 		const prompt = formatInterAgentMessage({

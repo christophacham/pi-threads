@@ -488,6 +488,64 @@ describe("ThreadManager", () => {
 		);
 	});
 
+	it("spawn with fork_turns all copies parent branch entries into child", async () => {
+		const cwd = createWorkspace();
+		const manager = new ThreadManager(createMockPi(), {
+			spawner: {
+				spawn: vi.fn(() => createMockProcess()),
+			},
+		});
+		const ctx = createContext(cwd);
+		parentSession(ctx).appendMessage({
+			role: "user",
+			content: "parent-context",
+			timestamp: Date.now(),
+		});
+		parentSession(ctx).appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "parent-reply" }],
+			api: "test",
+			provider: "test",
+			model: "test",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+
+		const result = await manager.spawn(ctx, {
+			task: "Forked task",
+			thread_name: "worker",
+			agent_type: "worker",
+			fork_turns: "all",
+		});
+
+		const listed = await SessionManager.list(cwd);
+		const childInfo = listed.find((session) => session.id === result.thread_id);
+		const childSession = SessionManager.open(childInfo!.path);
+		const messageEntries = childSession.getEntries().filter((entry) => entry.type === "message");
+		const userMessages = messageEntries
+			.filter((entry) => entry.message.role === "user")
+			.map((entry) => (entry.message.role === "user" ? entry.message.content : ""));
+		const assistantTexts = messageEntries
+			.filter((entry) => entry.message.role === "assistant")
+			.map((entry) => {
+				if (entry.message.role !== "assistant") return "";
+				const textBlock = entry.message.content.find((block) => block.type === "text");
+				return textBlock?.type === "text" ? textBlock.text : "";
+			});
+
+		expect(messageEntries).toHaveLength(3);
+		expect(userMessages).toEqual(["parent-context"]);
+		expect(assistantTexts).toEqual(["parent-reply", "thread session initialized"]);
+	});
+
 	it("spawn defaults fork_turns to none (fresh context, no parent turn copy)", async () => {
 		const cwd = createWorkspace();
 		const manager = new ThreadManager(createMockPi(), {
