@@ -504,7 +504,7 @@ export class ThreadManager {
 				status: resolveThreadStatus(active !== undefined, session.completion),
 				task: session.meta.task,
 				usage: session.completion?.usage,
-				model: undefined,
+				model: session.model,
 			} satisfies ThreadSummary;
 		});
 

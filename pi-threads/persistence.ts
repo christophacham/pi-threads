@@ -120,6 +120,7 @@ export interface ThreadSessionInfo {
 	path: string;
 	meta: ThreadMetaData;
 	completion?: ThreadCompletedData;
+	model?: string;
 }
 
 /** True when a thread session has thread_meta but no terminal thread_completed entry. */
@@ -176,6 +177,19 @@ export async function findThreadSessionById(
 /** Bootstrap assistant message written so Pi persists the child session file. */
 export const THREAD_SESSION_BOOTSTRAP_TEXT = "thread session initialized";
 
+/** Extract the model from the most recent non-bootstrap assistant message. */
+export function findLatestThreadModel(entries: SessionEntry[]): string | undefined {
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
+		if (entry.type !== "message") continue;
+		const message = entry.message;
+		if (message.role !== "assistant") continue;
+		if (!message.model || message.model === "pi-threads") continue;
+		return message.model;
+	}
+	return undefined;
+}
+
 /** Extract the last assistant text output from a thread session. */
 export function extractThreadOutput(entries: SessionEntry[]): string | undefined {
 	for (let i = entries.length - 1; i >= 0; i--) {
@@ -213,10 +227,12 @@ export async function listThreadSessions(
 		const meta = findFirstThreadMeta(manager.getEntries());
 		if (!meta) continue;
 
+		const entries = manager.getEntries();
 		threadSessions.push({
 			path: info.path,
 			meta,
-			completion: findLatestThreadCompleted(manager.getEntries()),
+			completion: findLatestThreadCompleted(entries),
+			model: findLatestThreadModel(entries),
 		});
 	}
 

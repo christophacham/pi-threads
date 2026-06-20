@@ -16,6 +16,15 @@ import { PI_THREADS_EXTENSION_ENTRY } from "./thread-subprocess.ts";
 import { pollThreadCompletions, ThreadManager } from "./thread-manager.ts";
 import { THREAD_ENTRY_TYPES, THREAD_TRANSCRIPT_TYPES } from "./types.ts";
 
+const TEST_USAGE = {
+	input: 10,
+	output: 20,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 30,
+	cost: { input: 0.01, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.03 },
+};
+
 describe("ThreadManager", () => {
 	const tempDirs: string[] = [];
 	const sessionFiles: string[] = [];
@@ -101,13 +110,13 @@ describe("ThreadManager", () => {
 		return ctx.sessionManager as SessionManager;
 	}
 
-	function persistSession(manager: SessionManager): void {
+	function persistSession(manager: SessionManager, model = "test"): void {
 		manager.appendMessage({
 			role: "assistant",
 			content: [{ type: "text", text: "persist" }],
 			api: "test",
 			provider: "test",
-			model: "test",
+			model,
 			usage: {
 				input: 0,
 				output: 0,
@@ -119,6 +128,33 @@ describe("ThreadManager", () => {
 			stopReason: "stop",
 			timestamp: Date.now(),
 		});
+	}
+
+	function createThreadSession(
+		cwd: string,
+		data: {
+			thread_id: string;
+			thread_name: string;
+			task: string;
+			status?: "completed" | "error" | "aborted" | "closed";
+			usage?: typeof TEST_USAGE;
+			model?: string;
+		},
+	): SessionManager {
+		const session = trackSession(SessionManager.create(cwd));
+		writeThreadMeta(session, {
+			parent_id: "parent-1",
+			thread_id: data.thread_id,
+			thread_name: data.thread_name,
+			depth: 1,
+			task: data.task,
+			agent_type: "worker",
+		});
+		if (data.status) {
+			writeThreadCompleted(session, { status: data.status, usage: data.usage });
+		}
+		persistSession(session, data.model);
+		return session;
 	}
 
 	it("resume reports incomplete thread sessions and respawns subprocesses", async () => {
@@ -283,41 +319,81 @@ describe("ThreadManager", () => {
 		expect(manager.getThreadChildren(parentId)).toEqual(["child-a"]);
 	});
 
-	it("list returns thread summaries with status filtering", async () => {
+	it("list meets list_threads acceptance criteria", async () => {
 		const cwd = createWorkspace();
 		const manager = new ThreadManager(createMockPi());
 		const ctx = createContext(cwd);
 
-		const running = trackSession(SessionManager.create(cwd));
-		writeThreadMeta(running, {
-			parent_id: "parent-1",
+		createThreadSession(cwd, {
 			thread_id: "thread-running",
 			thread_name: "runner",
-			depth: 1,
 			task: "Run task",
-			agent_type: "worker",
+			model: "claude-sonnet",
 		});
-		persistSession(running);
-
-		const closed = trackSession(SessionManager.create(cwd));
-		writeThreadMeta(closed, {
-			parent_id: "parent-1",
+		createThreadSession(cwd, {
+			thread_id: "thread-completed",
+			thread_name: "done",
+			task: "Finished task",
+			status: "completed",
+			usage: TEST_USAGE,
+			model: "gpt-4",
+		});
+		createThreadSession(cwd, {
+			thread_id: "thread-error",
+			thread_name: "failed",
+			task: "Failed task",
+			status: "error",
+		});
+		createThreadSession(cwd, {
+			thread_id: "thread-aborted",
+			thread_name: "stopped",
+			task: "Aborted task",
+			status: "aborted",
+		});
+		createThreadSession(cwd, {
 			thread_id: "thread-closed",
 			thread_name: "archived",
-			depth: 1,
 			task: "Old task",
-			agent_type: "worker",
+			status: "closed",
 		});
-		writeThreadCompleted(closed, { status: "closed" });
-		persistSession(closed);
 
 		const defaultList = await manager.list(ctx);
-		expect(defaultList).toHaveLength(1);
-		expect(defaultList[0]?.thread_id).toBe("thread-running");
-		expect(defaultList[0]?.status).toBe("running");
+		expect(defaultList.map((item) => item.thread_id).sort()).toEqual([
+			"thread-aborted",
+			"thread-completed",
+			"thread-error",
+			"thread-running",
+		]);
+		expect(defaultList.find((item) => item.thread_id === "thread-completed")).toMatchObject({
+			thread_name: "done",
+			parent_id: "parent-1",
+			depth: 1,
+			status: "completed",
+			task: "Finished task",
+			usage: TEST_USAGE,
+			model: "gpt-4",
+		});
+
+		const runningOnly = await manager.list(ctx, { status: "running" });
+		expect(runningOnly).toHaveLength(1);
+		expect(runningOnly[0]?.thread_id).toBe("thread-running");
+
+		const completedOnly = await manager.list(ctx, { status: "completed" });
+		expect(completedOnly.map((item) => item.thread_id).sort()).toEqual([
+			"thread-closed",
+			"thread-completed",
+		]);
+
+		const errorOnly = await manager.list(ctx, { status: "error" });
+		expect(errorOnly).toHaveLength(1);
+		expect(errorOnly[0]?.thread_id).toBe("thread-error");
+
+		const abortedOnly = await manager.list(ctx, { status: "aborted" });
+		expect(abortedOnly).toHaveLength(1);
+		expect(abortedOnly[0]?.thread_id).toBe("thread-aborted");
 
 		const allList = await manager.list(ctx, { status: "all" });
-		expect(allList).toHaveLength(2);
+		expect(allList).toHaveLength(5);
 	});
 
 	it("spawn meets spawn_thread acceptance criteria", async () => {
@@ -512,7 +588,7 @@ describe("ThreadManager", () => {
 		expect(result.threads[0]?.status).toBe("completed");
 	});
 
-	it("interrupt marks thread aborted and removes it from active map", async () => {
+	it("interrupt meets interrupt_thread acceptance criteria", async () => {
 		const cwd = createWorkspace();
 		const pi = createMockPi();
 		const mockProcess = createMockProcess();
@@ -532,14 +608,37 @@ describe("ThreadManager", () => {
 
 		const result = await manager.interrupt(ctx, { thread_id: spawned.thread_id });
 
-		expect(result.status).toBe("aborted");
+		expect(result).toEqual({
+			thread_id: spawned.thread_id,
+			thread_name: "runner",
+			status: "aborted",
+		});
 		expect(manager.getActiveThreads().has(spawned.thread_id)).toBe(false);
-		expect(pi.sendMessage).toHaveBeenCalled();
+		expect(mockProcess.kill).toHaveBeenCalledWith("SIGTERM");
+
+		const interruptedCall = vi
+			.mocked(pi.sendMessage)
+			.mock.calls.find(([message]) => message.customType === THREAD_TRANSCRIPT_TYPES.INTERRUPTED);
+		expect(interruptedCall?.[0]).toMatchObject({
+			customType: THREAD_TRANSCRIPT_TYPES.INTERRUPTED,
+			content: "Interrupted runner",
+			display: true,
+			details: {
+				kind: "Interrupted",
+				thread_id: spawned.thread_id,
+				thread_name: "runner",
+				agent_type: "worker",
+			},
+		});
 
 		const session = await import("./persistence.ts").then((mod) =>
 			mod.findThreadSessionById(cwd, spawned.thread_id),
 		);
 		expect(session?.completion?.status).toBe("aborted");
+
+		await expect(manager.interrupt(ctx, { thread_id: spawned.thread_id })).rejects.toThrow(
+			"Thread is not running",
+		);
 	});
 
 	it("registers active thread before subprocess handlers attach", async () => {
@@ -649,28 +748,47 @@ describe("ThreadManager", () => {
 		);
 	});
 
-	it("close archives completed thread sessions", async () => {
+	it("close meets close_thread acceptance criteria", async () => {
 		const cwd = createWorkspace();
 		const pi = createMockPi();
 		const manager = new ThreadManager(pi);
 		const ctx = createContext(cwd);
 
-		const child = trackSession(SessionManager.create(cwd));
-		writeThreadMeta(child, {
-			parent_id: "parent-1",
+		const child = createThreadSession(cwd, {
 			thread_id: "thread-close",
 			thread_name: "done",
-			depth: 1,
 			task: "Finished",
-			agent_type: "worker",
+			status: "completed",
 		});
-		writeThreadCompleted(child, { status: "completed" });
-		persistSession(child);
 
 		const result = await manager.close(ctx, { thread_id: "thread-close" });
 
-		expect(result.status).toBe("closed");
+		expect(result).toEqual({
+			thread_id: "thread-close",
+			thread_name: "done",
+			status: "closed",
+		});
+
+		expect(pi.sendMessage).toHaveBeenCalledWith({
+			customType: THREAD_TRANSCRIPT_TYPES.CLOSED,
+			content: "Closed done",
+			display: true,
+			details: {
+				kind: "Closed",
+				thread_id: "thread-close",
+				thread_name: "done",
+				agent_type: "worker",
+				customType: THREAD_TRANSCRIPT_TYPES.CLOSED,
+			},
+		});
+
 		const reopened = SessionManager.open(child.getSessionFile()!);
 		expect(findLatestThreadCompleted(reopened.getEntries())?.status).toBe("closed");
+
+		const defaultList = await manager.list(ctx);
+		expect(defaultList.some((item) => item.thread_id === "thread-close")).toBe(false);
+
+		const completedList = await manager.list(ctx, { status: "completed" });
+		expect(completedList.some((item) => item.thread_id === "thread-close")).toBe(true);
 	});
 });

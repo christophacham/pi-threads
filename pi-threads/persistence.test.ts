@@ -12,6 +12,7 @@ import {
 	extractThreadOutput,
 	findFirstThreadMeta,
 	findLatestThreadCompleted,
+	findLatestThreadModel,
 	formatInterAgentMessage,
 	THREAD_SESSION_BOOTSTRAP_TEXT,
 	isThreadSession,
@@ -160,6 +161,46 @@ describe("thread session entries", () => {
 
 		const completion = findLatestThreadCompleted(sm.getEntries());
 		expect(completion?.status).toBe("closed");
+	});
+
+	it("findLatestThreadModel skips bootstrap assistant messages", () => {
+		const sm = createSessionManager();
+		sm.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: THREAD_SESSION_BOOTSTRAP_TEXT }],
+			api: "pi-threads",
+			provider: "pi-threads",
+			model: "pi-threads",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+		sm.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "working" }],
+			api: "test",
+			provider: "test",
+			model: "claude-sonnet",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+
+		expect(findLatestThreadModel(sm.getEntries())).toBe("claude-sonnet");
 	});
 
 	it("identifies thread sessions via listThreadSessions", async () => {
