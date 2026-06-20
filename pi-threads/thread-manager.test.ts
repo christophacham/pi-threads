@@ -12,7 +12,8 @@ import {
 	writeThreadMeta,
 	writeThreadSpawnedDurable,
 } from "./persistence.ts";
-import { PI_THREADS_EXTENSION_ENTRY, WAIT_POLL_INTERVAL_MS } from "./thread-subprocess.ts";
+import { parseChildStdoutLine } from "./status-feed.ts";
+import { createRingBuffer, PI_THREADS_EXTENSION_ENTRY, WAIT_POLL_INTERVAL_MS } from "./thread-subprocess.ts";
 import { pollThreadCompletions, ThreadManager, type WaitThreadUpdate } from "./thread-manager.ts";
 import { THREAD_ENTRY_TYPES, THREAD_TRANSCRIPT_TYPES } from "./types.ts";
 
@@ -1071,6 +1072,45 @@ describe("ThreadManager", () => {
 		await expect(
 			manager.send(ctx, { thread_id: "thread-done", message: "hello" }),
 		).rejects.toThrow("Thread is not running");
+	});
+
+	it("getStatusFeed returns parsed tool activity lines from child stdout", () => {
+		const manager = new ThreadManager(createMockPi());
+		const stdoutLine = JSON.stringify({
+			type: "tool_execution_start",
+			toolCallId: "call_1",
+			toolName: "read",
+			args: { path: "src/index.ts" },
+		});
+
+		const record = {
+			process: null,
+			sessionFile: "/tmp/thread.jsonl",
+			threadName: "worker",
+			status: "running" as const,
+			agent_type: "worker",
+			depth: 1,
+			task: "scan",
+			stdoutBuffer: createRingBuffer(10),
+			stderrBuffer: createRingBuffer(10),
+			activityBuffer: createRingBuffer(10),
+		};
+		(manager as unknown as { threads: Map<string, typeof record> }).threads.set("thread-1", record);
+
+		const activity = parseChildStdoutLine(stdoutLine);
+		expect(activity).toBe("read src/index.ts");
+		if (activity) {
+			record.activityBuffer.lines.push(activity);
+		}
+
+		expect(manager.getStatusFeed()).toEqual([
+			{
+				thread_id: "thread-1",
+				thread_name: "worker",
+				status: "running",
+				lines: ["read src/index.ts"],
+			},
+		]);
 	});
 
 	it("close meets close_thread acceptance criteria", async () => {

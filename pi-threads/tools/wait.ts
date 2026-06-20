@@ -1,5 +1,6 @@
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { clearStatusFeedWidget, updateStatusFeedWidget } from "../status-feed.ts";
 import type { ThreadManager } from "../thread-manager.ts";
 import { runTool } from "./common.ts";
 
@@ -25,25 +26,31 @@ export function registerWaitThreadTool(pi: ExtensionAPI, manager: ThreadManager)
 			parameters: WaitThreadParams,
 			async execute(_toolCallId, params, _signal, onUpdate, ctx) {
 				return runTool(
-					() =>
-						manager.wait(
-							ctx,
-							params,
-							onUpdate
-								? (update) =>
-										onUpdate({
-											content: [
-												{
-													type: "text",
-													text: update.waiting
-														.map((item) => `${item.name}: ${item.status}`)
-														.join("\n"),
-												},
-											],
-											details: update,
-										})
-								: undefined,
-						),
+					async () => {
+						try {
+							updateStatusFeedWidget(ctx, manager.getStatusFeed());
+							return await manager.wait(
+								ctx,
+								params,
+								(update) => {
+									updateStatusFeedWidget(ctx, manager.getStatusFeed());
+									onUpdate?.({
+										content: [
+											{
+												type: "text",
+												text: update.waiting
+													.map((item) => `${item.name}: ${item.status}`)
+													.join("\n"),
+											},
+										],
+										details: update,
+									});
+								},
+							);
+						} finally {
+							clearStatusFeedWidget(ctx);
+						}
+					},
 					(result) => ({
 						content: [
 							{

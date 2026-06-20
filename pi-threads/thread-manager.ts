@@ -27,6 +27,7 @@ import {
 	writeThreadSendDual,
 	writeThreadSpawnedDual,
 } from "./persistence.ts";
+import { parseChildStdoutLine } from "./status-feed.ts";
 import {
 	buildThreadPiArgs,
 	createRingBuffer,
@@ -53,6 +54,7 @@ export interface ThreadRecord {
 	task: string;
 	stdoutBuffer: RingBuffer;
 	stderrBuffer: RingBuffer;
+	activityBuffer: RingBuffer;
 }
 
 export type ForkTurns = "none" | "all" | number;
@@ -150,6 +152,7 @@ export interface ResumeResult {
 export interface StatusFeedEntry {
 	thread_id: ThreadId;
 	thread_name: string;
+	status: ThreadRuntimeStatus;
 	lines: string[];
 }
 
@@ -301,13 +304,11 @@ export class ThreadManager {
 		const feed: StatusFeedEntry[] = [];
 		for (const [threadId, record] of this.threads) {
 			if (record.status !== "running") continue;
-			const stdoutLines = getRingBufferTail(record.stdoutBuffer, maxLines);
-			const stderrLines = getRingBufferTail(record.stderrBuffer, maxLines);
-			const lines = [...stdoutLines, ...stderrLines].slice(-maxLines);
 			feed.push({
 				thread_id: threadId,
 				thread_name: record.threadName,
-				lines,
+				status: record.status,
+				lines: getRingBufferTail(record.activityBuffer, maxLines),
 			});
 		}
 		return feed;
@@ -354,6 +355,7 @@ export class ThreadManager {
 			task: params.task,
 			stdoutBuffer: createRingBuffer(OUTPUT_RING_BUFFER_SIZE),
 			stderrBuffer: createRingBuffer(OUTPUT_RING_BUFFER_SIZE),
+			activityBuffer: createRingBuffer(OUTPUT_RING_BUFFER_SIZE),
 		};
 		this.threads.set(threadId, record);
 
@@ -630,6 +632,7 @@ export class ThreadManager {
 				task: session.meta.task,
 				stdoutBuffer: createRingBuffer(OUTPUT_RING_BUFFER_SIZE),
 				stderrBuffer: createRingBuffer(OUTPUT_RING_BUFFER_SIZE),
+				activityBuffer: createRingBuffer(OUTPUT_RING_BUFFER_SIZE),
 			};
 			this.threads.set(session.meta.thread_id, record);
 
@@ -699,7 +702,15 @@ export class ThreadManager {
 
 		proc.stdout?.on("data", (chunk: Buffer | string) => {
 			const record = attachBuffers();
-			if (record) pushRingBufferLine(record.stdoutBuffer, String(chunk));
+			if (!record) return;
+
+			for (const rawLine of String(chunk).split(/\r?\n/)) {
+				const line = rawLine.trimEnd();
+				if (!line) continue;
+				pushRingBufferLine(record.stdoutBuffer, line);
+				const activity = parseChildStdoutLine(line);
+				if (activity) pushRingBufferLine(record.activityBuffer, activity);
+			}
 		});
 
 		proc.stderr?.on("data", (chunk: Buffer | string) => {
