@@ -35,6 +35,7 @@ import {
 	OUTPUT_RING_BUFFER_SIZE,
 	pushRingBufferLine,
 	resolvePiSpawn,
+	KILL_SUBPROCESS_TIMEOUT_MS,
 	SIGKILL_TIMEOUT_MS,
 	STATUS_FEED_MAX_LINES,
 	WAIT_POLL_INTERVAL_MS,
@@ -771,9 +772,13 @@ export class ThreadManager {
 
 		return new Promise((resolve) => {
 			let settled = false;
+			let sigkillTimer: NodeJS.Timeout | undefined;
+			let killTimeoutTimer: NodeJS.Timeout | undefined;
 			const finish = () => {
 				if (settled) return;
 				settled = true;
+				if (sigkillTimer !== undefined) clearTimeout(sigkillTimer);
+				if (killTimeoutTimer !== undefined) clearTimeout(killTimeoutTimer);
 				resolve();
 			};
 
@@ -781,12 +786,15 @@ export class ThreadManager {
 
 			process.kill("SIGTERM");
 
-			const sigkillTimer = setTimeout(() => {
+			sigkillTimer = setTimeout(() => {
 				if (process.exitCode === null && !process.killed) {
 					process.kill("SIGKILL");
 				}
 			}, SIGKILL_TIMEOUT_MS);
 			sigkillTimer.unref();
+
+			killTimeoutTimer = setTimeout(finish, KILL_SUBPROCESS_TIMEOUT_MS);
+			killTimeoutTimer.unref();
 		});
 	}
 }

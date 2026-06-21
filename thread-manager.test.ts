@@ -13,7 +13,13 @@ import {
 	writeThreadSpawnedDurable,
 } from "./persistence.ts";
 import { parseChildStdoutLine } from "./status-feed.ts";
-import { createRingBuffer, PI_THREADS_EXTENSION_ENTRY, WAIT_POLL_INTERVAL_MS } from "./thread-subprocess.ts";
+import {
+	createRingBuffer,
+	KILL_SUBPROCESS_TIMEOUT_MS,
+	PI_THREADS_EXTENSION_ENTRY,
+	SIGKILL_TIMEOUT_MS,
+	WAIT_POLL_INTERVAL_MS,
+} from "./thread-subprocess.ts";
 import { pollThreadCompletions, ThreadManager, type WaitThreadUpdate } from "./thread-manager.ts";
 import { THREAD_ENTRY_TYPES, THREAD_TRANSCRIPT_TYPES } from "./types.ts";
 
@@ -58,7 +64,11 @@ describe("ThreadManager", () => {
 		} as unknown as ExtensionAPI;
 	}
 
-	function createMockProcess(options?: { exitImmediately?: boolean; exitCode?: number }): ChildProcess {
+	function createMockProcess(options?: {
+		exitImmediately?: boolean;
+		exitCode?: number;
+		noExitOnKill?: boolean;
+	}): ChildProcess {
 		const eventHandlers = new Map<string, Array<(...args: unknown[]) => void>>();
 		const proc = {
 			stdout: { on: vi.fn() },
@@ -85,6 +95,7 @@ describe("ThreadManager", () => {
 				eventHandlers.set(event, handlers);
 			}),
 			kill: vi.fn(() => {
+				if (options?.noExitOnKill) return;
 				for (const handler of eventHandlers.get("exit") ?? []) {
 					handler(0);
 				}
@@ -845,6 +856,45 @@ describe("ThreadManager", () => {
 		await expect(manager.wait(ctx, { thread_ids: ["missing-thread"] })).rejects.toThrow(
 			"Thread not found: missing-thread",
 		);
+	});
+
+	it("interrupt completes when subprocess never emits exit", async () => {
+		vi.useFakeTimers();
+		try {
+			const cwd = createWorkspace();
+			const pi = createMockPi();
+			const mockProcess = createMockProcess({ noExitOnKill: true });
+			const manager = new ThreadManager(pi, {
+				spawner: {
+					spawn: vi.fn(() => mockProcess),
+				},
+				sleep: async () => {},
+			});
+			const ctx = createContext(cwd);
+
+			const spawned = await manager.spawn(ctx, {
+				task: "Run forever",
+				thread_name: "runner",
+				agent_type: "worker",
+			});
+
+			const interruptPromise = manager.interrupt(ctx, { thread_id: spawned.thread_id });
+			await vi.advanceTimersByTimeAsync(SIGKILL_TIMEOUT_MS);
+			expect(mockProcess.kill).toHaveBeenCalledWith("SIGKILL");
+
+			await vi.advanceTimersByTimeAsync(KILL_SUBPROCESS_TIMEOUT_MS - SIGKILL_TIMEOUT_MS);
+			const result = await interruptPromise;
+
+			expect(result).toEqual({
+				thread_id: spawned.thread_id,
+				thread_name: "runner",
+				status: "aborted",
+			});
+			expect(manager.getActiveThreads().has(spawned.thread_id)).toBe(false);
+			expect(mockProcess.kill).toHaveBeenCalledWith("SIGTERM");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("interrupt meets interrupt_thread acceptance criteria", async () => {
