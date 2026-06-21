@@ -81,8 +81,7 @@ Child subprocesses load only this extension (`--no-extensions` plus inherited `-
 ## Session navigation
 
 - `/threads` — picker to switch between main and thread sessions
-- `/threads-prev` / `/threads-next` — cycle sessions
-- `Alt+Left` / `Alt+Right` — same as prev/next
+- `/threads-prev` / `/threads-next` — cycle sessions (no default shortcuts; bind via `/keybindings` if desired)
 
 Status bar shows the current session (main or thread name).
 
