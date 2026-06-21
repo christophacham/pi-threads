@@ -85,6 +85,19 @@ Child subprocesses load only this extension (`--no-extensions` plus inherited `-
 
 Status bar shows the current session (main or thread name).
 
+## Public API
+
+Supported exports from `index.ts`:
+
+| Export | Description |
+|--------|-------------|
+| `default` | Pi extension registration |
+| `shouldRespawnThreadsOnSessionStart` | Whether to respawn threads on `session_start` |
+| `contracts` | Tool parameter schemas and result types |
+| `types` | Thread protocol entry types and constants |
+
+Internal modules (`thread-manager`, `persistence`, etc.) are not re-exported.
+
 ## Development
 
 ```bash

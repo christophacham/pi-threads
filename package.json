@@ -4,6 +4,9 @@
 	"private": true,
 	"version": "0.1.0",
 	"type": "module",
+	"exports": {
+		".": "./index.ts"
+	},
 	"pi": {
 		"extensions": ["./index.ts"]
 	},
