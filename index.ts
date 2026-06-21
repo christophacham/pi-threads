@@ -10,7 +10,7 @@ import {
 	parsePollIntervalMs,
 	startChildMessagePoller,
 } from "./child-message-poller.ts";
-import { isThreadSession } from "./persistence.ts";
+import { isThreadSession, listThreadSessions } from "./persistence.ts";
 import { registerThreadRenderers } from "./renderers.ts";
 import { registerThreadPicker } from "./thread-picker.ts";
 import { ThreadManager } from "./thread-manager.ts";
@@ -35,7 +35,7 @@ export default function (pi: ExtensionAPI) {
 	const threadManager = new ThreadManager(pi);
 	registerThreadRenderers(pi);
 	registerThreadTools(pi, threadManager);
-	registerThreadPicker(pi, threadManager);
+	const navigator = registerThreadPicker(pi, threadManager);
 
 	pi.registerFlag(SEND_POLL_FLAG, {
 		description: "Child thread session poll interval in milliseconds",
@@ -58,11 +58,16 @@ export default function (pi: ExtensionAPI) {
 			childMessagePoller = startChildMessagePoller(pi, ctx, {
 				pollIntervalMs: parsePollIntervalMs(pi.getFlag(SEND_POLL_FLAG)),
 			});
+			await navigator.refresh(ctx, threadManager);
+			navigator.updateStatusBar(ctx);
 			return;
 		}
 
 		stopChildMessagePoller();
-		await threadManager.resume(ctx);
+		const sessions = await listThreadSessions(ctx.cwd);
+		await threadManager.resume(ctx, sessions);
+		await navigator.refresh(ctx, threadManager, sessions);
+		navigator.updateStatusBar(ctx);
 	});
 
 	pi.on("session_shutdown", () => {

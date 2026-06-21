@@ -28,6 +28,7 @@ import {
 	formatInterAgentMessage,
 	listThreadSessions,
 	shouldResumeThreadSession,
+	type ThreadSessionInfo,
 	THREAD_SESSION_BOOTSTRAP_TEXT,
 	writeThreadCompleted,
 	writeThreadMeta,

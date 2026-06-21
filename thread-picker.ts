@@ -1,6 +1,11 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { findAllThreadSpawned, findFirstThreadMeta, listThreadSessions } from "./persistence.ts";
+import {
+	findAllThreadSpawned,
+	findFirstThreadMeta,
+	listThreadSessions,
+	type ThreadSessionInfo,
+} from "./persistence.ts";
 import { resolveStatusFeedIndicator, statusFeedIndicatorGlyph } from "./status-feed.ts";
 import type { ThreadManager, ThreadRuntimeStatus } from "./thread-manager.ts";
 import type { ThreadCompletedStatus } from "./types.ts";
@@ -31,7 +36,11 @@ export class ThreadNavigator {
 		return this.entries[this.currentIndex];
 	}
 
-	async refresh(ctx: ExtensionContext, manager: ThreadManager): Promise<ThreadNavigationEntry[]> {
+	async refresh(
+		ctx: ExtensionContext,
+		manager: ThreadManager,
+		threadSessions?: ThreadSessionInfo[],
+	): Promise<ThreadNavigationEntry[]> {
 		const currentPath = ctx.sessionManager.getSessionFile();
 		if (!currentPath) {
 			this.entries = [];
@@ -50,10 +59,10 @@ export class ThreadNavigator {
 			if (parentSession) parentPath = parentSession.path;
 		}
 
-		const threadSessions = await listThreadSessions(ctx.cwd);
+		const sessions = threadSessions ?? (await listThreadSessions(ctx.cwd));
 		const parentSessionManager = SessionManager.open(parentPath);
 		const spawnedOrder = findAllThreadSpawned(parentSessionManager.getEntries());
-		const sessionById = new Map(threadSessions.map((session) => [session.meta.thread_id, session]));
+		const sessionById = new Map(sessions.map((session) => [session.meta.thread_id, session]));
 
 		const orderedThreadIds: string[] = [];
 		for (const spawned of spawnedOrder) {
@@ -61,7 +70,7 @@ export class ThreadNavigator {
 				orderedThreadIds.push(spawned.thread_id);
 			}
 		}
-		for (const session of threadSessions) {
+		for (const session of sessions) {
 			if (!orderedThreadIds.includes(session.meta.thread_id)) {
 				orderedThreadIds.push(session.meta.thread_id);
 			}
@@ -215,14 +224,6 @@ export function registerThreadPicker(pi: ExtensionAPI, manager: ThreadManager): 
 		},
 	});
 
-	pi.on("session_start", async (_event, ctx) => {
-		await navigator.refresh(ctx, manager);
-		navigator.updateStatusBar(ctx);
-	});
-
-	pi.on("session_shutdown", () => {
-		// Status is cleared automatically when the runtime shuts down.
-	});
 
 	return navigator;
 }
