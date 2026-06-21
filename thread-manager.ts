@@ -5,7 +5,7 @@
  * spawn/send to durable + transcript channels, and appends inter-agent user messages
  * to child session files for the child poller to deliver.
  */
-import { type ChildProcess, spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { forkParentContextIntoChild } from "./context-fork.ts";
@@ -25,20 +25,18 @@ import {
 	writeThreadMeta,
 } from "./persistence.ts";
 import { ThreadEvents } from "./thread-events.ts";
-import { parseChildStdoutLine } from "./status-feed.ts";
 import {
-	buildThreadPiArgs,
 	createRingBuffer,
 	getRingBufferTail,
 	OUTPUT_RING_BUFFER_SIZE,
-	pushRingBufferLine,
-	resolvePiSpawn,
-	KILL_SUBPROCESS_TIMEOUT_MS,
-	SIGKILL_TIMEOUT_MS,
 	STATUS_FEED_MAX_LINES,
 	WAIT_POLL_INTERVAL_MS,
 	type RingBuffer,
 } from "./thread-subprocess.ts";
+import {
+	ThreadSubprocessRunner,
+	type ThreadSubprocessSpawner,
+} from "./thread-subprocess-runner.ts";
 import type {
 	CloseThreadParams,
 	CloseThreadResult,
@@ -106,9 +104,7 @@ export interface StatusFeedEntry {
 	lines: string[];
 }
 
-export interface ThreadSubprocessSpawner {
-	spawn(command: string, args: string[], options: Parameters<typeof spawn>[2]): ChildProcess;
-}
+export type { ThreadSubprocessSpawner } from "./thread-subprocess-runner.ts";
 
 export interface ThreadManagerDeps {
 	spawner?: ThreadSubprocessSpawner;
@@ -261,7 +257,7 @@ export async function pollThreadCompletions(
 export class ThreadManager {
 	private readonly threads = new Map<ThreadId, ThreadRecord>();
 	private threadChildren = new Map<string, Set<ThreadId>>();
-	private readonly spawner: ThreadSubprocessSpawner;
+	private readonly subprocessRunner: ThreadSubprocessRunner;
 	private readonly sleep: (ms: number) => Promise<void>;
 	private readonly threadEvents: ThreadEvents;
 	private ctx: ExtensionContext | null = null;
@@ -270,7 +266,12 @@ export class ThreadManager {
 		private readonly pi: ExtensionAPI,
 		deps: ThreadManagerDeps = {},
 	) {
-		this.spawner = deps.spawner ?? { spawn };
+		this.subprocessRunner = new ThreadSubprocessRunner({
+			spawner: deps.spawner,
+			getRecord: (threadId) => this.threads.get(threadId),
+			onExit: (threadId, sessionFile, exitCode) =>
+				this.handleSubprocessExit(threadId, sessionFile, exitCode),
+		});
 		this.sleep = deps.sleep ?? delay;
 		this.threadEvents = deps.threadEvents ?? new ThreadEvents(pi);
 	}
@@ -356,17 +357,13 @@ export class ThreadManager {
 			throw new ThreadToolError(THREAD_TOOL_ERROR_CODES.ABORTED, "Spawn aborted before starting subprocess", { thread_id: threadId });
 		}
 
-		record.process = this.startSubprocess({
+		record.process = this.subprocessRunner.start({
 			sessionFile,
 			prompt,
 			model: params.model,
 			tools: params.tools,
 			cwd,
 			threadId,
-			threadName: params.thread_name,
-			agent_type: params.agent_type,
-			depth,
-			task: params.task,
 		});
 
 		this.threadEvents.recordSpawn(
@@ -579,7 +576,7 @@ export class ThreadManager {
 			agent_type: record.agent_type,
 		});
 
-		await this.killSubprocess(record.process);
+		await this.subprocessRunner.kill(record.process);
 
 		this.threads.delete(params.thread_id);
 
@@ -646,15 +643,11 @@ export class ThreadManager {
 			};
 			this.threads.set(session.meta.thread_id, record);
 
-			record.process = this.startSubprocess({
+			record.process = this.subprocessRunner.start({
 				sessionFile: session.path,
 				prompt: "",
 				cwd: ctx.cwd,
 				threadId: session.meta.thread_id,
-				threadName: session.meta.thread_name,
-				agent_type: session.meta.agent_type,
-				depth: session.meta.depth,
-				task: session.meta.task,
 				resume: true,
 			});
 			resumedCount++;
@@ -674,66 +667,6 @@ export class ThreadManager {
 		};
 	}
 
-	private startSubprocess(options: {
-		sessionFile: string;
-		prompt: string;
-		model?: string;
-		tools?: string[];
-		cwd: string;
-		threadId: ThreadId;
-		threadName: string;
-		agent_type: string;
-		depth: number;
-		task: string;
-		resume?: boolean;
-	}): ChildProcess {
-		const { command, prefixArgs } = resolvePiSpawn();
-		const args = buildThreadPiArgs({
-			sessionFile: options.sessionFile,
-			prompt: options.prompt,
-			model: options.model,
-			tools: options.tools,
-			resume: options.resume,
-		});
-
-		const proc = this.spawner.spawn(command, [...prefixArgs, ...args], {
-			cwd: options.cwd,
-			shell: false,
-			stdio: ["pipe", "pipe", "pipe"],
-			env: process.env,
-		});
-
-		const recordRef = { current: this.threads.get(options.threadId) };
-		const attachBuffers = () => {
-			const record = this.threads.get(options.threadId);
-			recordRef.current = record;
-			return record;
-		};
-
-		proc.stdout?.on("data", (chunk: Buffer | string) => {
-			const record = attachBuffers();
-			if (!record) return;
-
-			for (const rawLine of String(chunk).split(/\r?\n/)) {
-				const line = rawLine.trimEnd();
-				if (!line) continue;
-				pushRingBufferLine(record.stdoutBuffer, line);
-				const activity = parseChildStdoutLine(line);
-				if (activity) pushRingBufferLine(record.activityBuffer, activity);
-			}
-		});
-
-		proc.stderr?.on("data", (chunk: Buffer | string) => {
-			const record = attachBuffers();
-			if (record) pushRingBufferLine(record.stderrBuffer, String(chunk));
-		});
-
-		proc.on("exit", (code) => {
-			void this.handleSubprocessExit(options.threadId, options.sessionFile, code);
-		});
-
-		return proc;
-	}
 
 	private pollWaitThreadTick(
 		sessions: ThreadSessionInfo[],
@@ -802,36 +735,4 @@ export class ThreadManager {
 		this.threads.delete(threadId);
 	}
 
-	private killSubprocess(process: ChildProcess | null): Promise<void> {
-		if (!process || process.exitCode !== null || process.killed) {
-			return Promise.resolve();
-		}
-
-		return new Promise((resolve) => {
-			let settled = false;
-			let sigkillTimer: NodeJS.Timeout | undefined;
-			let killTimeoutTimer: NodeJS.Timeout | undefined;
-			const finish = () => {
-				if (settled) return;
-				settled = true;
-				if (sigkillTimer !== undefined) clearTimeout(sigkillTimer);
-				if (killTimeoutTimer !== undefined) clearTimeout(killTimeoutTimer);
-				resolve();
-			};
-
-			process.once("exit", finish);
-
-			process.kill("SIGTERM");
-
-			sigkillTimer = setTimeout(() => {
-				if (process.exitCode === null && !process.killed) {
-					process.kill("SIGKILL");
-				}
-			}, SIGKILL_TIMEOUT_MS);
-			sigkillTimer.unref();
-
-			killTimeoutTimer = setTimeout(finish, KILL_SUBPROCESS_TIMEOUT_MS);
-			killTimeoutTimer.unref();
-		});
-	}
 }
