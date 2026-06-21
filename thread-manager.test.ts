@@ -545,6 +545,7 @@ describe("ThreadManager", () => {
 			expect(childInfo).toBeTruthy();
 
 			const childSession = SessionManager.open(childInfo!.path);
+			expect(childSession.getHeader()?.parentSession).toBe(ctx.sessionManager.getSessionFile());
 			expect(childSession.usesDefaultSessionDir()).toBe(true);
 			expect(childSession.getSessionDir()).toContain("/sessions/");
 
@@ -878,12 +879,81 @@ describe("ThreadManager", () => {
 				},
 			);
 
-			expect(result.get("pending")).toBe("completed");
+				expect(result.get("pending")).toBe("completed");
 			expect(polls).toBeGreaterThan(0);
+		});
+
+		it("throws when signal is aborted during polling", async () => {
+			const controller = new AbortController();
+			let polls = 0;
+
+			const promise = pollThreadCompletions(
+				["slow-thread"],
+				() => {
+					polls++;
+					if (polls >= 1) controller.abort();
+					return undefined;
+				},
+				{
+					pollIntervalMs: 1,
+					signal: controller.signal,
+					sleep: async () => {},
+				},
+			);
+
+			await expect(promise).rejects.toBeInstanceOf(ThreadWaitAbortedError);
+			await expect(promise).rejects.toMatchObject({
+				code: THREAD_TOOL_ERROR_CODES.ABORTED,
+				message: "Wait aborted before threads completed: slow-thread",
+				pendingThreadIds: ["slow-thread"],
+			});
 		});
 	});
 
 	describe("wait", () => {
+		it("throws when aborted during polling", async () => {
+			const cwd = createWorkspace();
+			const pi = createMockPi();
+			const controller = new AbortController();
+			const manager = new ThreadManager(pi, {
+				sleep: async () => {
+					controller.abort();
+				},
+			});
+			const ctx = createContext(cwd);
+
+			const running = trackSession(SessionManager.create(cwd));
+			writeThreadMeta(running, {
+				parent_id: "parent-1",
+				thread_id: "thread-running",
+				thread_name: "runner",
+				depth: 1,
+				task: "Long task",
+				agent_type: "worker",
+			});
+			persistSession(running);
+
+			const record = {
+				process: createMockProcess(),
+				sessionFile: running.getSessionFile()!,
+				threadName: "runner",
+				status: "running" as const,
+				agent_type: "worker",
+				depth: 1,
+				task: "Long task",
+				stdoutBuffer: createRingBuffer(16),
+				stderrBuffer: createRingBuffer(16),
+				activityBuffer: createRingBuffer(16),
+			};
+			(manager as unknown as { threads: Map<string, typeof record> }).threads.set("thread-running", record);
+
+			await expect(
+				manager.wait(ctx, { thread_ids: ["thread-running"] }, undefined, controller.signal),
+			).rejects.toBeInstanceOf(ThreadWaitAbortedError);
+
+			expect(manager.getActiveThreads().has("thread-running")).toBe(true);
+		});
+
 		it("returns completed thread summaries with output", async () => {
 			const cwd = createWorkspace();
 			const pi = createMockPi();
