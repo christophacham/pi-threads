@@ -67,7 +67,7 @@ import type {
 	WaitThreadUpdate,
 } from "./contracts.ts";
 import { ThreadToolError, THREAD_TOOL_ERROR_CODES } from "./thread-tool-error.ts";
-import type { ThreadCompletedStatus, ThreadId, ThreadMetaData } from "./types.ts";
+import type { ThreadCompletedStatus, ThreadId, ThreadMeta } from "./types.ts";
 
 export type {
 	CloseThreadParams,
@@ -152,11 +152,11 @@ function matchesListFilter(summary: ThreadSummary, filter?: ListThreadsFilter): 
 	}
 }
 
-function resolveParentAuthor(parentMeta: ThreadMetaData | undefined): string {
+function resolveParentAuthor(parentMeta: ThreadMeta | undefined): string {
 	return parentMeta?.thread_name ?? "root";
 }
 
-function resolveSpawnDepth(parentMeta: ThreadMetaData | undefined): number {
+function resolveSpawnDepth(parentMeta: ThreadMeta | undefined): number {
 	return parentMeta ? parentMeta.depth + 1 : 1;
 }
 

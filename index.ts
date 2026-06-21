@@ -3,6 +3,16 @@
  *
  * Routes by session role: parent sessions resume ThreadManager and own thread
  * lifecycle; child sessions (thread_meta present) start the message poller instead.
+ *
+ * ## Public package surface
+ *
+ * Only the symbols below are part of the supported extension API. Import internal
+ * modules directly only from in-repo tests or forks — they are not re-exported.
+ *
+ * - **default** — Pi extension registration (`ExtensionAPI` → void)
+ * - **shouldRespawnThreadsOnSessionStart** — session_start resume policy helper
+ * - **contracts** — tool parameter schemas and tool/manager result types
+ * - **types** — thread protocol entry types, constants, and activity payloads
  */
 import type { ExtensionAPI, SessionStartEvent } from "@earendil-works/pi-coding-agent";
 import {
@@ -19,19 +29,6 @@ import { registerThreadTools } from "./tools/index.ts";
 
 export * from "./contracts.ts";
 export * from "./types.ts";
-export * from "./thread-tool-error.ts";
-export * from "./persistence.ts";
-export * from "./thread-manager.ts";
-export { registerThreadRenderers, getTranscriptContent } from "./renderers.ts";
-export { registerThreadPicker, ThreadNavigator } from "./thread-picker.ts";
-export {
-	formatStatusFeedWidgetLines,
-	parseChildStdoutLine,
-	updateStatusFeedWidget,
-	clearStatusFeedWidget,
-} from "./status-feed.ts";
-export { registerThreadTools } from "./tools/index.ts";
-export { startChildMessagePoller, parsePollIntervalMs } from "./child-message-poller.ts";
 
 /** True when session_start should respawn incomplete thread subprocesses. */
 export function shouldRespawnThreadsOnSessionStart(reason: SessionStartEvent["reason"]): boolean {
