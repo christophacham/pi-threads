@@ -1,3 +1,9 @@
+/**
+ * pi-threads extension entry point.
+ *
+ * Routes by session role: parent sessions resume ThreadManager and own thread
+ * lifecycle; child sessions (thread_meta present) start the message poller instead.
+ */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	type ChildMessagePollerHandle,

@@ -1,3 +1,12 @@
+/**
+ * Dual-write persistence for thread protocol events.
+ *
+ * Durable channel (appendEntry / appendCustomEntry): session-file entries for tree
+ * reconstruction and terminal state (thread_meta, thread_spawned, thread_completed).
+ *
+ * Transcript channel (sendMessage): inline custom messages in the parent session UI.
+ * Spawn and send dual-write both; wait, interrupted, and closed are transcript-only.
+ */
 import type { UserMessage } from "@earendil-works/pi-ai";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
@@ -202,6 +211,7 @@ function addThreadChild(
 export async function buildThreadChildrenMap(
 	cwd: string,
 	sessionDir?: string,
+	threadSessions?: ThreadSessionInfo[],
 ): Promise<Map<string, Set<ThreadId>>> {
 	const children = new Map<string, Set<ThreadId>>();
 	const allSessions = await SessionManager.list(cwd, sessionDir);
@@ -213,8 +223,8 @@ export async function buildThreadChildrenMap(
 		}
 	}
 
-	const threadSessions = await listThreadSessions(cwd, sessionDir);
-	for (const session of threadSessions) {
+	const sessions = threadSessions ?? (await listThreadSessions(cwd, sessionDir));
+	for (const session of sessions) {
 		addThreadChild(children, session.meta.parent_id, session.meta.thread_id);
 	}
 

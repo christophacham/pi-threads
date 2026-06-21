@@ -1,3 +1,10 @@
+/**
+ * Child-session message poller.
+ *
+ * Runs only in thread child sessions. Polls the child session file for user messages
+ * appended by the parent (appendInterAgentUserMessage) and injects them into the
+ * running agent via steer or followUp.
+ */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import {

@@ -1,3 +1,10 @@
+/**
+ * Thread protocol types and entry-type constants.
+ *
+ * Two persistence channels:
+ * - Durable (THREAD_ENTRY_TYPES): appendEntry — tree reconstruction, completion state.
+ * - Transcript (THREAD_TRANSCRIPT_TYPES): sendMessage — inline parent-session activity feed.
+ */
 import type { Usage } from "@earendil-works/pi-ai";
 
 /** Durable custom entry types written via pi.appendEntry() / SessionManager.appendCustomEntry(). */

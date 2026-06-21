@@ -1,3 +1,10 @@
+/**
+ * Parent-session thread runtime.
+ *
+ * Owns subprocess lifecycle (spawn, resume, wait, interrupt, close), dual-writes
+ * spawn/send to durable + transcript channels, and appends inter-agent user messages
+ * to child session files for the child poller to deliver.
+ */
 import { type ChildProcess, spawn } from "node:child_process";
 import type { Usage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -659,10 +666,10 @@ export class ThreadManager {
 		};
 	}
 
-	async resume(ctx: ExtensionContext): Promise<ResumeResult> {
-		const sessions = await listThreadSessions(ctx.cwd);
+	async resume(ctx: ExtensionContext, threadSessions?: ThreadSessionInfo[]): Promise<ResumeResult> {
+		const sessions = threadSessions ?? (await listThreadSessions(ctx.cwd));
 		const incomplete = sessions.filter(shouldResumeThreadSession);
-		this.threadChildren = await buildThreadChildrenMap(ctx.cwd);
+		this.threadChildren = await buildThreadChildrenMap(ctx.cwd, undefined, sessions);
 
 		let resumedCount = 0;
 		for (const session of incomplete) {
