@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { appendInterAgentUserMessage, writeThreadMeta } from "./persistence.ts";
@@ -19,7 +19,7 @@ vi.mock("./thread-manager.ts", () => ({
 	})),
 }));
 
-import registerExtension from "./index.ts";
+import registerExtension, { shouldRespawnThreadsOnSessionStart } from "./index.ts";
 
 describe("pi-threads extension session lifecycle", () => {
 	const tempDirs: string[] = [];
@@ -33,7 +33,8 @@ describe("pi-threads extension session lifecycle", () => {
 		for (const dir of tempDirs.splice(0)) {
 			rmSync(dir, { recursive: true, force: true });
 		}
-		vi.restoreAllMocks();
+		vi.mocked(globalThis.setInterval).mockRestore();
+		vi.mocked(globalThis.clearInterval).mockRestore();
 		intervalCount = 0;
 		vi.clearAllMocks();
 	});
@@ -149,6 +150,68 @@ describe("pi-threads extension session lifecycle", () => {
 			},
 		};
 	}
+
+	function sessionStartEvent(reason: SessionStartEvent["reason"]): SessionStartEvent {
+		return { type: "session_start", reason };
+	}
+
+	describe("shouldRespawnThreadsOnSessionStart", () => {
+		it("respawns on startup, new, and resume", () => {
+			expect(shouldRespawnThreadsOnSessionStart("startup")).toBe(true);
+			expect(shouldRespawnThreadsOnSessionStart("new")).toBe(true);
+			expect(shouldRespawnThreadsOnSessionStart("resume")).toBe(true);
+		});
+
+		it("skips respawn on reload and fork", () => {
+			expect(shouldRespawnThreadsOnSessionStart("reload")).toBe(false);
+			expect(shouldRespawnThreadsOnSessionStart("fork")).toBe(false);
+		});
+	});
+
+	it("calls resume on parent session_start with reason startup", async () => {
+		const cwd = createWorkspace();
+		const { pi, emit } = createMockPi();
+		registerExtension(pi);
+
+		const parent = createParentContext(cwd);
+		await emit("session_start", sessionStartEvent("startup"), parent);
+
+		expect(resume).toHaveBeenCalledTimes(1);
+		expect(resume).toHaveBeenCalledWith(parent, expect.any(Array));
+	});
+
+	it("does not call resume on parent session_start with reason reload", async () => {
+		const cwd = createWorkspace();
+		const { pi, emit } = createMockPi();
+		registerExtension(pi);
+
+		const parent = createParentContext(cwd);
+		await emit("session_start", sessionStartEvent("reload"), parent);
+
+		expect(resume).not.toHaveBeenCalled();
+	});
+
+	it("does not call resume on parent session_start with reason fork", async () => {
+		const cwd = createWorkspace();
+		const { pi, emit } = createMockPi();
+		registerExtension(pi);
+
+		const parent = createParentContext(cwd);
+		await emit("session_start", sessionStartEvent("fork"), parent);
+
+		expect(resume).not.toHaveBeenCalled();
+	});
+
+	it("does not call resume for child thread sessions regardless of reason", async () => {
+		const cwd = createWorkspace();
+		const { pi, emit } = createMockPi();
+		registerExtension(pi);
+
+		const child = createChildContext(cwd, "thread-a", "worker-a");
+		await emit("session_start", sessionStartEvent("startup"), child);
+
+		expect(resume).not.toHaveBeenCalled();
+	});
 
 	it("does not leave duplicate intervals after session switch simulation", async () => {
 		const cwd = createWorkspace();

@@ -4,7 +4,7 @@
  * Routes by session role: parent sessions resume ThreadManager and own thread
  * lifecycle; child sessions (thread_meta present) start the message poller instead.
  */
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, SessionStartEvent } from "@earendil-works/pi-coding-agent";
 import {
 	type ChildMessagePollerHandle,
 	parsePollIntervalMs,
@@ -32,6 +32,11 @@ export {
 export { registerThreadTools } from "./tools/index.ts";
 export { startChildMessagePoller, parsePollIntervalMs } from "./child-message-poller.ts";
 
+/** True when session_start should respawn incomplete thread subprocesses. */
+export function shouldRespawnThreadsOnSessionStart(reason: SessionStartEvent["reason"]): boolean {
+	return reason !== "reload" && reason !== "fork";
+}
+
 export default function (pi: ExtensionAPI) {
 	const threadManager = new ThreadManager(pi);
 	registerThreadRenderers(pi);
@@ -51,7 +56,7 @@ export default function (pi: ExtensionAPI) {
 		childMessagePoller = undefined;
 	};
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		threadManager.bindContext(ctx);
 
 		if (isThreadSession(ctx.sessionManager)) {
@@ -66,7 +71,9 @@ export default function (pi: ExtensionAPI) {
 
 		stopChildMessagePoller();
 		const sessions = await listThreadSessions(ctx.cwd);
-		await threadManager.resume(ctx, sessions);
+		if (shouldRespawnThreadsOnSessionStart(event.reason)) {
+			await threadManager.resume(ctx, sessions);
+		}
 		await navigator.refresh(ctx, threadManager, sessions);
 		navigator.updateStatusBar(ctx);
 	});
