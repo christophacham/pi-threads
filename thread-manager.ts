@@ -235,6 +235,23 @@ function persistThreadSession(session: SessionManager): void {
 	});
 }
 
+/** Thrown when pollThreadCompletions exceeds its deadline before all threads finish. */
+export class ThreadWaitTimeoutError extends Error {
+	readonly partialResults: ReadonlyMap<ThreadId, ThreadCompletedStatus>;
+	readonly pendingThreadIds: readonly ThreadId[];
+
+	constructor(
+		message: string,
+		partialResults: Map<ThreadId, ThreadCompletedStatus>,
+		pendingThreadIds: ThreadId[],
+	) {
+		super(message);
+		this.name = "ThreadWaitTimeoutError";
+		this.partialResults = partialResults;
+		this.pendingThreadIds = pendingThreadIds;
+	}
+}
+
 /** Poll child sessions until all requested threads reach a terminal state. */
 export async function pollThreadCompletions(
 	threadIds: ThreadId[],
@@ -258,7 +275,12 @@ export async function pollThreadCompletions(
 
 	while (results.size < threadIds.length) {
 		if (deadline !== undefined && Date.now() >= deadline) {
-			throw new Error(`Timed out waiting for threads: ${threadIds.filter((id) => !results.has(id)).join(", ")}`);
+			const pendingThreadIds = threadIds.filter((id) => !results.has(id));
+			throw new ThreadWaitTimeoutError(
+				`Timed out waiting for threads: ${pendingThreadIds.join(", ")}`,
+				results,
+				pendingThreadIds,
+			);
 		}
 
 		for (const threadId of threadIds) {
@@ -432,44 +454,52 @@ export class ThreadManager {
 
 		const timeoutMs = params.timeout !== undefined ? params.timeout * 1000 : undefined;
 
-		const completions = await pollThreadCompletions(
-			params.thread_ids,
-			(threadId) => {
-				const active = this.threads.get(threadId);
-				const session = sessions.find((item) => item.meta.thread_id === threadId);
-				if (!session) return undefined;
+		let completions: Map<ThreadId, ThreadCompletedStatus>;
+		try {
+			completions = await pollThreadCompletions(
+				params.thread_ids,
+				(threadId) => {
+					const active = this.threads.get(threadId);
+					const session = sessions.find((item) => item.meta.thread_id === threadId);
+					if (!session) return undefined;
 
-				const manager = SessionManager.open(session.path);
-				const completion = findLatestThreadCompleted(manager.getEntries());
-				if (completion) return completion.status;
-				if (!active) return undefined;
-				return undefined;
-			},
-			{
-				timeoutMs,
-				pollIntervalMs: WAIT_POLL_INTERVAL_MS,
-				sleep: this.sleep,
-				onPoll: () => {
-					if (!onUpdate) return;
-					onUpdate({
-						waiting: sessions.map((session) => {
-							const threadId = session.meta.thread_id;
-							const active = this.threads.get(threadId);
-							const manager = SessionManager.open(session.path);
-							const completion = findLatestThreadCompleted(manager.getEntries());
-							return {
-								thread_id: threadId,
-								thread_name: session.meta.thread_name,
-								agent_type: session.meta.agent_type,
-								task: session.meta.task,
-								status: completion?.status ?? active?.status ?? "running",
-								activities: active ? getRingBufferTail(active.activityBuffer, 8) : [],
-							};
-						}),
-					});
+					const manager = SessionManager.open(session.path);
+					const completion = findLatestThreadCompleted(manager.getEntries());
+					if (completion) return completion.status;
+					if (!active) return undefined;
+					return undefined;
 				},
-			},
-		);
+				{
+					timeoutMs,
+					pollIntervalMs: WAIT_POLL_INTERVAL_MS,
+					sleep: this.sleep,
+					onPoll: () => {
+						if (!onUpdate) return;
+						onUpdate({
+							waiting: sessions.map((session) => {
+								const threadId = session.meta.thread_id;
+								const active = this.threads.get(threadId);
+								const manager = SessionManager.open(session.path);
+								const completion = findLatestThreadCompleted(manager.getEntries());
+								return {
+									thread_id: threadId,
+									thread_name: session.meta.thread_name,
+									agent_type: session.meta.agent_type,
+									task: session.meta.task,
+									status: completion?.status ?? active?.status ?? "running",
+									activities: active ? getRingBufferTail(active.activityBuffer, 8) : [],
+								};
+							}),
+						});
+					},
+				},
+			);
+		} catch (error) {
+			if (error instanceof ThreadWaitTimeoutError) {
+				this.reconcileActiveThreadsAfterWaitTimeout(params.thread_ids, sessions);
+			}
+			throw error;
+		}
 
 		const threads = sessions.map((session) => {
 			const threadId = session.meta.thread_id;
@@ -739,6 +769,21 @@ export class ThreadManager {
 		});
 
 		return proc;
+	}
+
+	private reconcileActiveThreadsAfterWaitTimeout(
+		threadIds: ThreadId[],
+		sessions: Awaited<ReturnType<typeof findThreadSessionById>>[],
+	): void {
+		for (const threadId of threadIds) {
+			const session = sessions.find((item) => item?.meta.thread_id === threadId);
+			if (!session) continue;
+
+			const completion = findLatestThreadCompleted(SessionManager.open(session.path).getEntries());
+			if (completion) {
+				this.threads.delete(threadId);
+			}
+		}
 	}
 
 	private async handleSubprocessExit(
