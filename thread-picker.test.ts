@@ -178,62 +178,54 @@ describe("ThreadNavigator", () => {
 	});
 });
 
-describe("registerThreadPicker shortcuts", () => {
-	function setupShortcuts(): {
+describe("registerThreadPicker commands", () => {
+	function setupCommands(): {
 		pi: ExtensionAPI;
-		shortcuts: Map<string, (ctx: ExtensionContext) => void>;
+		commands: Map<string, (ctx: ExtensionContext) => Promise<void>>;
 	} {
-		const shortcuts = new Map<string, (ctx: ExtensionContext) => void>();
+		const commands = new Map<string, (ctx: ExtensionContext) => Promise<void>>();
 		const pi = {
-			registerCommand: vi.fn(),
-			registerShortcut: vi.fn((key: string, options: { handler: (ctx: ExtensionContext) => void }) => {
-				shortcuts.set(key, options.handler);
-			}),
-			sendUserMessage: vi.fn(),
+			registerCommand: vi.fn(
+				(name: string, options: { handler: (_args: string, ctx: ExtensionContext) => Promise<void> }) => {
+					commands.set(name, (ctx) => options.handler("", ctx));
+				},
+			),
+			registerShortcut: vi.fn(),
 			on: vi.fn(),
 		} as unknown as ExtensionAPI;
 
 		registerThreadPicker(pi, new ThreadManager({} as never));
-		return { pi, shortcuts };
+		return { pi, commands };
 	}
 
-	it("alt+left sends /threads-prev without deliverAs when idle", () => {
-		const { pi, shortcuts } = setupShortcuts();
-		const handler = shortcuts.get("alt+left");
-		expect(handler).toBeDefined();
+	it("does not register alt+left/alt+right shortcuts (tree nav collision)", () => {
+		const { pi } = setupCommands();
 
-		handler!({ isIdle: () => true } as ExtensionContext);
-
-		expect(pi.sendUserMessage).toHaveBeenCalledWith("/threads-prev");
+		expect(pi.registerShortcut).not.toHaveBeenCalled();
 	});
 
-	it("alt+left sends /threads-prev with followUp when streaming", () => {
-		const { pi, shortcuts } = setupShortcuts();
-		const handler = shortcuts.get("alt+left");
-		expect(handler).toBeDefined();
+	it("registers /threads-prev and /threads-next commands", async () => {
+		const { commands } = setupCommands();
+		const ctx = {
+			cwd: "/tmp",
+			sessionManager: SessionManager.create("/tmp"),
+			ui: { notify: vi.fn(), select: vi.fn(), setStatus: vi.fn() },
+			switchSession: vi.fn(async () => ({ cancelled: false })),
+		} as unknown as ExtensionContext;
 
-		handler!({ isIdle: () => false } as ExtensionContext);
+		const prev = commands.get("threads-prev");
+		const next = commands.get("threads-next");
+		expect(prev).toBeDefined();
+		expect(next).toBeDefined();
 
-		expect(pi.sendUserMessage).toHaveBeenCalledWith("/threads-prev", { deliverAs: "followUp" });
-	});
+		const cycleSpy = vi.spyOn(ThreadNavigator.prototype, "cycle").mockResolvedValue();
 
-	it("alt+right sends /threads-next without deliverAs when idle", () => {
-		const { pi, shortcuts } = setupShortcuts();
-		const handler = shortcuts.get("alt+right");
-		expect(handler).toBeDefined();
+		await prev!(ctx);
+		expect(cycleSpy).toHaveBeenCalledWith(ctx, -1, expect.any(ThreadManager));
 
-		handler!({ isIdle: () => true } as ExtensionContext);
+		await next!(ctx);
+		expect(cycleSpy).toHaveBeenCalledWith(ctx, 1, expect.any(ThreadManager));
 
-		expect(pi.sendUserMessage).toHaveBeenCalledWith("/threads-next");
-	});
-
-	it("alt+right sends /threads-next with followUp when streaming", () => {
-		const { pi, shortcuts } = setupShortcuts();
-		const handler = shortcuts.get("alt+right");
-		expect(handler).toBeDefined();
-
-		handler!({ isIdle: () => false } as ExtensionContext);
-
-		expect(pi.sendUserMessage).toHaveBeenCalledWith("/threads-next", { deliverAs: "followUp" });
+		cycleSpy.mockRestore();
 	});
 });

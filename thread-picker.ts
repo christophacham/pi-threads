@@ -178,14 +178,6 @@ export class ThreadNavigator {
 	}
 }
 
-function sendThreadPickerShortcut(pi: ExtensionAPI, ctx: ExtensionContext, command: string): void {
-	if (ctx.isIdle()) {
-		pi.sendUserMessage(command);
-	} else {
-		pi.sendUserMessage(command, { deliverAs: "followUp" });
-	}
-}
-
 export function registerThreadPicker(pi: ExtensionAPI, manager: ThreadManager): ThreadNavigator {
 	const navigator = new ThreadNavigator();
 
@@ -196,34 +188,20 @@ export function registerThreadPicker(pi: ExtensionAPI, manager: ThreadManager): 
 		},
 	});
 
+	// No default keyboard shortcuts: alt+left/alt+right collide with pi tree navigation.
 	pi.registerCommand("threads-prev", {
-		description: "Previous thread session",
+		description: "Previous thread session (no default shortcut; bind via /keybindings if desired)",
 		handler: async (_args, ctx) => {
 			await navigator.cycle(ctx, -1, manager);
 		},
 	});
 
 	pi.registerCommand("threads-next", {
-		description: "Next thread session",
+		description: "Next thread session (no default shortcut; bind via /keybindings if desired)",
 		handler: async (_args, ctx) => {
 			await navigator.cycle(ctx, 1, manager);
 		},
 	});
-
-	pi.registerShortcut("alt+left", {
-		description: "Previous thread session",
-		handler: (ctx) => {
-			sendThreadPickerShortcut(pi, ctx, "/threads-prev");
-		},
-	});
-
-	pi.registerShortcut("alt+right", {
-		description: "Next thread session",
-		handler: (ctx) => {
-			sendThreadPickerShortcut(pi, ctx, "/threads-next");
-		},
-	});
-
 
 	return navigator;
 }
