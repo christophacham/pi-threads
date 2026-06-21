@@ -88,7 +88,10 @@ Child subprocesses load only this extension (`--no-extensions` plus inherited `-
 ## Session navigation
 
 - `/threads` — picker to switch between main and thread sessions
-- `/threads-prev` / `/threads-next` — cycle sessions (no default shortcuts; bind via `/keybindings` if desired)
+- `/threads-prev` / `/threads-next` — cycle sessions
+- `alt+,` / `alt+.` — same as prev/next (does not use `alt+left`/`alt+right`, which conflict with Pi session tree navigation)
+
+Extension shortcuts use `pi.registerShortcut`, not `keybindings.json` — `/keybindings` only configures built-in `app.*` actions.
 
 Status bar shows the current session (main or thread name).
 

@@ -71,12 +71,11 @@ Child subprocesses: `--no-extensions` plus parent's `-e` flags, loading only pi-
 
 ## Navigation
 
-Commands (no default keyboard shortcuts — avoids `alt+left`/`alt+right` tree-nav collision):
-
 - `/threads` — session picker
 - `/threads-prev` / `/threads-next` — cycle sessions
+- `alt+,` / `alt+.` — default prev/next shortcuts
 
-Bind custom shortcuts via `/keybindings` if desired.
+Do **not** use `alt+left`/`alt+right` — they collide with Pi tree navigation (`app.tree.foldOrUp` / `unfoldOrDown`). `/keybindings` cannot bind extension commands; use `pi.registerShortcut` in the extension instead.
 
 ## Development
 

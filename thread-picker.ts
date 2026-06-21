@@ -1,4 +1,8 @@
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+	ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import {
 	findAllThreadSpawned,
@@ -189,19 +193,33 @@ export function registerThreadPicker(pi: ExtensionAPI, manager: ThreadManager): 
 		},
 	});
 
-	// No default keyboard shortcuts: alt+left/alt+right collide with pi tree navigation.
 	pi.registerCommand("threads-prev", {
-		description: "Previous thread session (no default shortcut; bind via /keybindings if desired)",
+		description: "Previous thread session (default: alt+,)",
 		handler: async (_args, ctx) => {
 			await navigator.cycle(ctx, -1, manager);
 		},
 	});
 
 	pi.registerCommand("threads-next", {
-		description: "Next thread session (no default shortcut; bind via /keybindings if desired)",
+		description: "Next thread session (default: alt+.)",
 		handler: async (_args, ctx) => {
 			await navigator.cycle(ctx, 1, manager);
 		},
+	});
+
+	// alt+left/alt+right collide with pi tree navigation (app.tree.foldOrUp / unfoldOrDown).
+	const cycleShortcut = (direction: -1 | 1) => async (ctx: ExtensionContext) => {
+		await navigator.cycle(ctx as ExtensionCommandContext, direction, manager);
+	};
+
+	pi.registerShortcut("alt+,", {
+		description: "Previous thread session",
+		handler: cycleShortcut(-1),
+	});
+
+	pi.registerShortcut("alt+.", {
+		description: "Next thread session",
+		handler: cycleShortcut(1),
 	});
 
 	return navigator;

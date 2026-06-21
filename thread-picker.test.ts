@@ -154,10 +154,24 @@ describe("registerThreadPicker commands", () => {
 		return { pi, commands };
 	}
 
-	it("does not register alt+left/alt+right shortcuts (tree nav collision)", () => {
-		const { pi } = setupCommands();
+	it("registers alt+, and alt+. shortcuts (not alt+left/right tree nav)", () => {
+		const shortcuts = new Map<string, (ctx: ExtensionContext) => Promise<void>>();
+		const pi = {
+			registerCommand: vi.fn(),
+			registerShortcut: vi.fn(
+				(key: string, options: { handler: (ctx: ExtensionContext) => Promise<void> }) => {
+					shortcuts.set(key, options.handler);
+				},
+			),
+			on: vi.fn(),
+		} as unknown as ExtensionAPI;
 
-		expect(pi.registerShortcut).not.toHaveBeenCalled();
+		registerThreadPicker(pi, new ThreadManager({} as never));
+
+		expect(shortcuts.has("alt+,")).toBe(true);
+		expect(shortcuts.has("alt+.")).toBe(true);
+		expect(shortcuts.has("alt+left")).toBe(false);
+		expect(shortcuts.has("alt+right")).toBe(false);
 	});
 
 	it("registers /threads-prev and /threads-next commands", async () => {
