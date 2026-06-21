@@ -1135,41 +1135,48 @@ describe("ThreadManager", () => {
 		it("opens each child session once per poll tick while waiting", async () => {
 			const cwd = createWorkspace();
 			const pi = createMockPi();
-			const alpha = createThreadSession(cwd, {
+			createThreadSession(cwd, {
 				thread_id: "thread-alpha",
 				thread_name: "alpha",
 				task: "Task A",
 			});
-			const beta = createThreadSession(cwd, {
+			createThreadSession(cwd, {
 				thread_id: "thread-beta",
 				thread_name: "beta",
 				task: "Task B",
 			});
-			const sessionPaths = [alpha.getSessionFile()!, beta.getSessionFile()!];
-			let pollTick = 0;
 			const manager = new ThreadManager(pi, {
-				sleep: async () => {
-					pollTick++;
-					if (pollTick === 1) {
-						writeThreadCompleted(SessionManager.open(sessionPaths[0]!), { status: "completed" });
-						writeThreadCompleted(SessionManager.open(sessionPaths[1]!), { status: "completed" });
-					}
-				},
+				sleep: async () => {},
 			});
 			const ctx = createContext(cwd);
 			const openSpy = vi.spyOn(SessionManager, "open");
-			const countPollOpens = () =>
-				openSpy.mock.calls.filter(([path]) => sessionPaths.includes(path as string)).length;
+			const pollTickOpens: number[] = [];
+			const pollWaitThreadTick = (
+				ThreadManager.prototype as unknown as {
+					pollWaitThreadTick: ThreadManager["pollWaitThreadTick"];
+				}
+			).pollWaitThreadTick;
+			const pollSpy = vi
+				.spyOn(
+					ThreadManager.prototype as unknown as {
+						pollWaitThreadTick: ThreadManager["pollWaitThreadTick"];
+					},
+					"pollWaitThreadTick",
+				)
+				.mockImplementation(function (this: ThreadManager, sessions) {
+					const opensBefore = openSpy.mock.calls.length;
+					const snapshot = pollWaitThreadTick.call(this, sessions);
+					pollTickOpens.push(openSpy.mock.calls.length - opensBefore);
+					return snapshot;
+				});
 
-			const opensBefore = countPollOpens();
-			await manager.wait(
-				ctx,
-				{ thread_ids: ["thread-alpha", "thread-beta"] },
-				() => {},
-			);
-			const pollOpens = countPollOpens() - opensBefore;
+			await manager.wait(ctx, {
+				thread_ids: ["thread-alpha", "thread-beta"],
+				timeout: 0.001,
+			});
 
-			expect(pollOpens).toBe(2);
+			expect(pollTickOpens[0]).toBe(2);
+			pollSpy.mockRestore();
 			openSpy.mockRestore();
 		});
 
@@ -1210,14 +1217,32 @@ describe("ThreadManager", () => {
 			(manager as unknown as { threads: Map<string, typeof record> }).threads.set("thread-running", record);
 
 			const openSpy = vi.spyOn(SessionManager, "open");
-			const opensBefore = openSpy.mock.calls.filter(([path]) => path === sessionPath).length;
+			const pollTickOpens: number[] = [];
+			const pollWaitThreadTick = (
+				ThreadManager.prototype as unknown as {
+					pollWaitThreadTick: ThreadManager["pollWaitThreadTick"];
+				}
+			).pollWaitThreadTick;
+			const pollSpy = vi
+				.spyOn(
+					ThreadManager.prototype as unknown as {
+						pollWaitThreadTick: ThreadManager["pollWaitThreadTick"];
+					},
+					"pollWaitThreadTick",
+				)
+				.mockImplementation(function (this: ThreadManager, sessions) {
+					const opensBefore = openSpy.mock.calls.length;
+					const snapshot = pollWaitThreadTick.call(this, sessions);
+					pollTickOpens.push(openSpy.mock.calls.length - opensBefore);
+					return snapshot;
+				});
 
 			await expect(
 				manager.wait(ctx, { thread_ids: ["thread-running"] }, undefined, controller.signal),
 			).rejects.toBeInstanceOf(ThreadWaitAbortedError);
 
-			const opensAfter = openSpy.mock.calls.filter(([path]) => path === sessionPath).length;
-			expect(opensAfter - opensBefore).toBe(1);
+			expect(pollTickOpens[0]).toBe(0);
+			pollSpy.mockRestore();
 			openSpy.mockRestore();
 		});
 
