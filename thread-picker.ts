@@ -169,6 +169,14 @@ export class ThreadNavigator {
 	}
 }
 
+function sendThreadPickerShortcut(pi: ExtensionAPI, ctx: ExtensionContext, command: string): void {
+	if (ctx.isIdle()) {
+		pi.sendUserMessage(command);
+	} else {
+		pi.sendUserMessage(command, { deliverAs: "followUp" });
+	}
+}
+
 export function registerThreadPicker(pi: ExtensionAPI, manager: ThreadManager): ThreadNavigator {
 	const navigator = new ThreadNavigator();
 
@@ -195,15 +203,15 @@ export function registerThreadPicker(pi: ExtensionAPI, manager: ThreadManager): 
 
 	pi.registerShortcut("alt+left", {
 		description: "Previous thread session",
-		handler: () => {
-			pi.sendUserMessage("/threads-prev");
+		handler: (ctx) => {
+			sendThreadPickerShortcut(pi, ctx, "/threads-prev");
 		},
 	});
 
 	pi.registerShortcut("alt+right", {
 		description: "Next thread session",
-		handler: () => {
-			pi.sendUserMessage("/threads-next");
+		handler: (ctx) => {
+			sendThreadPickerShortcut(pi, ctx, "/threads-next");
 		},
 	});
 

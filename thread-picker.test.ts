@@ -1,11 +1,11 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { writeThreadMeta, writeThreadSpawnedDurable } from "./persistence.ts";
-import { ThreadNavigator } from "./thread-picker.ts";
+import { registerThreadPicker, ThreadNavigator } from "./thread-picker.ts";
 import { ThreadManager } from "./thread-manager.ts";
 
 describe("ThreadNavigator", () => {
@@ -175,5 +175,65 @@ describe("ThreadNavigator", () => {
 		await navigator.cycle(commandCtx as never, 1, manager);
 		expect(switchedPaths).toHaveLength(2);
 		expect(navigator.getCurrentIndex()).toBe(0);
+	});
+});
+
+describe("registerThreadPicker shortcuts", () => {
+	function setupShortcuts(): {
+		pi: ExtensionAPI;
+		shortcuts: Map<string, (ctx: ExtensionContext) => void>;
+	} {
+		const shortcuts = new Map<string, (ctx: ExtensionContext) => void>();
+		const pi = {
+			registerCommand: vi.fn(),
+			registerShortcut: vi.fn((key: string, options: { handler: (ctx: ExtensionContext) => void }) => {
+				shortcuts.set(key, options.handler);
+			}),
+			sendUserMessage: vi.fn(),
+			on: vi.fn(),
+		} as unknown as ExtensionAPI;
+
+		registerThreadPicker(pi, new ThreadManager({} as never));
+		return { pi, shortcuts };
+	}
+
+	it("alt+left sends /threads-prev without deliverAs when idle", () => {
+		const { pi, shortcuts } = setupShortcuts();
+		const handler = shortcuts.get("alt+left");
+		expect(handler).toBeDefined();
+
+		handler!({ isIdle: () => true } as ExtensionContext);
+
+		expect(pi.sendUserMessage).toHaveBeenCalledWith("/threads-prev");
+	});
+
+	it("alt+left sends /threads-prev with followUp when streaming", () => {
+		const { pi, shortcuts } = setupShortcuts();
+		const handler = shortcuts.get("alt+left");
+		expect(handler).toBeDefined();
+
+		handler!({ isIdle: () => false } as ExtensionContext);
+
+		expect(pi.sendUserMessage).toHaveBeenCalledWith("/threads-prev", { deliverAs: "followUp" });
+	});
+
+	it("alt+right sends /threads-next without deliverAs when idle", () => {
+		const { pi, shortcuts } = setupShortcuts();
+		const handler = shortcuts.get("alt+right");
+		expect(handler).toBeDefined();
+
+		handler!({ isIdle: () => true } as ExtensionContext);
+
+		expect(pi.sendUserMessage).toHaveBeenCalledWith("/threads-next");
+	});
+
+	it("alt+right sends /threads-next with followUp when streaming", () => {
+		const { pi, shortcuts } = setupShortcuts();
+		const handler = shortcuts.get("alt+right");
+		expect(handler).toBeDefined();
+
+		handler!({ isIdle: () => false } as ExtensionContext);
+
+		expect(pi.sendUserMessage).toHaveBeenCalledWith("/threads-next", { deliverAs: "followUp" });
 	});
 });
