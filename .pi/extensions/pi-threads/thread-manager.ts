@@ -527,7 +527,7 @@ export class ThreadManager {
 		return summaries.filter((summary) => matchesListFilter(summary, params.status));
 	}
 
-	async send(ctx: ExtensionContext, params: SendToThreadParams): Promise<SendToThreadResult> {
+	async sendToThread(ctx: ExtensionContext, params: SendToThreadParams): Promise<SendToThreadResult> {
 		const session = await findThreadSessionById(ctx.cwd, params.thread_id);
 		if (!session) {
 			throw new Error(`Thread not found: ${params.thread_id}`);

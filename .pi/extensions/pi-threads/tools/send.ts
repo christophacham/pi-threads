@@ -25,7 +25,7 @@ export function registerSendToThreadTool(pi: ExtensionAPI, manager: ThreadManage
 			renderResult: renderSendToThreadResult,
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 				return runTool(
-					() => manager.send(ctx, params),
+					() => manager.sendToThread(ctx, params),
 					(result) => ({
 						content: [
 							{

@@ -1328,7 +1328,7 @@ describe("ThreadManager", () => {
 			expect(summaries.find((item) => item.thread_id === slow.thread_id)?.status).toBe("running");
 
 			await expect(
-				manager.send(ctx, { thread_id: slow.thread_id, message: "continue" }),
+				manager.sendToThread(ctx, { thread_id: slow.thread_id, message: "continue" }),
 			).resolves.toEqual({
 				thread_id: slow.thread_id,
 				thread_name: "slow",
@@ -1595,7 +1595,7 @@ describe("ThreadManager", () => {
 		});
 	});
 
-	describe("send", () => {
+	describe("sendToThread", () => {
 		it("delivers message to running thread and records transcript", async () => {
 			const cwd = createWorkspace();
 			const pi = createMockPi();
@@ -1613,7 +1613,7 @@ describe("ThreadManager", () => {
 				agent_type: "worker",
 			});
 
-			const result = await manager.send(ctx, {
+			const result = await manager.sendToThread(ctx, {
 				thread_id: spawned.thread_id,
 				message: "Please continue with tests",
 			});
@@ -1662,7 +1662,7 @@ describe("ThreadManager", () => {
 			const ctx = createContext(cwd);
 
 			await expect(
-				manager.send(ctx, { thread_id: "missing-thread", message: "hello" }),
+				manager.sendToThread(ctx, { thread_id: "missing-thread", message: "hello" }),
 			).rejects.toThrow("Thread not found");
 		});
 
@@ -1679,7 +1679,7 @@ describe("ThreadManager", () => {
 			});
 
 			await expect(
-				manager.send(ctx, { thread_id: "thread-done", message: "hello" }),
+				manager.sendToThread(ctx, { thread_id: "thread-done", message: "hello" }),
 			).rejects.toThrow("Thread is not running");
 		});
 	});
