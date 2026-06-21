@@ -14,9 +14,9 @@ export function registerSpawnThreadTool(pi: ExtensionAPI, manager: ThreadManager
 			parameters: SpawnThreadParamsSchema,
 			renderCall: renderSpawnThreadCall,
 			renderResult: renderSpawnThreadResult,
-			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 				return runTool(
-					() => manager.spawn(ctx, params),
+					() => manager.spawn(ctx, params, signal),
 					(result) => ({
 						content: [
 							{

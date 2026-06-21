@@ -15,7 +15,7 @@ export function registerWaitThreadTool(pi: ExtensionAPI, manager: ThreadManager)
 			parameters: WaitThreadParamsSchema,
 			renderCall: renderWaitThreadCall,
 			renderResult: renderWaitThreadResult,
-			async execute(_toolCallId, params, _signal, onUpdate, ctx) {
+			async execute(_toolCallId, params, signal, onUpdate, ctx) {
 				return runTool(
 					async () => {
 						try {
@@ -37,6 +37,7 @@ export function registerWaitThreadTool(pi: ExtensionAPI, manager: ThreadManager)
 										details: update,
 									});
 								},
+								signal,
 							);
 						} finally {
 							clearStatusFeedWidget(ctx);
