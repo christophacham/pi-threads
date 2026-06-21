@@ -1,18 +1,8 @@
-import { StringEnum } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { ListThreadsParamsSchema } from "../contracts.ts";
 import type { ThreadManager } from "../thread-manager.ts";
 import { renderListThreadsCall, renderListThreadsResult } from "../tool-render.ts";
 import { runTool } from "./common.ts";
-
-const ListThreadsParams = Type.Object({
-	status: Type.Optional(
-		StringEnum(["running", "completed", "error", "aborted", "all"] as const, {
-			description:
-				"Filter threads by status. Default excludes archived (closed) threads. Use 'all' to include closed threads.",
-		}),
-	),
-});
 
 export function registerListThreadsTool(pi: ExtensionAPI, manager: ThreadManager): void {
 	pi.registerTool(
@@ -21,7 +11,7 @@ export function registerListThreadsTool(pi: ExtensionAPI, manager: ThreadManager
 			label: "List Threads",
 			description:
 				"Enumerate subagent thread sessions with status, task summary, and usage. Archived (closed) threads are hidden by default.",
-			parameters: ListThreadsParams,
+			parameters: ListThreadsParamsSchema,
 			renderCall: renderListThreadsCall,
 			renderResult: renderListThreadsResult,
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

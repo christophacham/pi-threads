@@ -1,7 +1,7 @@
 import type { Message } from "@earendil-works/pi-ai";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import type { ForkTurns } from "./thread-manager.ts";
+import type { ForkTurns } from "./contracts.ts";
 
 export interface SessionBranchSource {
 	getBranch(): SessionEntry[];

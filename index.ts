@@ -17,6 +17,7 @@ import { ThreadManager } from "./thread-manager.ts";
 import { SEND_POLL_FLAG, SEND_POLL_INTERVAL_MS } from "./thread-subprocess.ts";
 import { registerThreadTools } from "./tools/index.ts";
 
+export * from "./contracts.ts";
 export * from "./types.ts";
 export * from "./thread-tool-error.ts";
 export * from "./persistence.ts";

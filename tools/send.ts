@@ -1,17 +1,8 @@
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { SendToThreadParamsSchema } from "../contracts.ts";
 import type { ThreadManager } from "../thread-manager.ts";
 import { renderSendToThreadCall, renderSendToThreadResult } from "../tool-render.ts";
 import { runTool } from "./common.ts";
-
-const SendToThreadParams = Type.Object({
-	thread_id: Type.String({
-		description: "Target thread ID",
-	}),
-	message: Type.String({
-		description: "Message to send to the running thread (wrapped in InterAgentCommunication envelope)",
-	}),
-});
 
 export function registerSendToThreadTool(pi: ExtensionAPI, manager: ThreadManager): void {
 	pi.registerTool(
@@ -20,7 +11,7 @@ export function registerSendToThreadTool(pi: ExtensionAPI, manager: ThreadManage
 			label: "Send To Thread",
 			description:
 				"Inject a message into a running subagent thread session using the inter-agent communication envelope.",
-			parameters: SendToThreadParams,
+			parameters: SendToThreadParamsSchema,
 			renderCall: renderSendToThreadCall,
 			renderResult: renderSendToThreadResult,
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

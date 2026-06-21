@@ -23,7 +23,7 @@ import type {
 	WaitThreadItem,
 	WaitThreadParams,
 	WaitThreadResult,
-} from "./thread-manager.ts";
+} from "./contracts.ts";
 import { type ThreadToolErrorCode, type ThreadToolErrorDetails, type ThreadToolErrorResult } from "./thread-tool-error.ts";
 import type { ThreadCompletedStatus } from "./types.ts";
 
@@ -93,7 +93,7 @@ function isToolResultError<T>(
 	return Boolean(result.isError || context?.isError);
 }
 
-const THREAD_TOOL_ERROR_HINTS: Record<ThreadToolErrorCode, string> = { THREAD_NOT_FOUND: "Use list_threads to find valid thread IDs in this workspace.", THREAD_NOT_RUNNING: "Wait for the thread to finish or use interrupt_thread if it is stuck.", THREAD_STILL_RUNNING: "Use interrupt_thread to stop the thread before closing it.", THREAD_NOT_COMPLETED: "Wait until the thread completes successfully before closing it.", SESSION_CREATE_FAILED: "Check workspace permissions and available disk space, then retry.", TIMEOUT: "Increase timeout, wait on fewer threads, or interrupt slow threads.", UNKNOWN: "Retry the operation or inspect extension logs for more detail." };
+const THREAD_TOOL_ERROR_HINTS: Record<ThreadToolErrorCode, string> = { THREAD_NOT_FOUND: "Use list_threads to find valid thread IDs in this workspace.", THREAD_NOT_RUNNING: "Wait for the thread to finish or use interrupt_thread if it is stuck.", THREAD_STILL_RUNNING: "Use interrupt_thread to stop the thread before closing it.", THREAD_NOT_COMPLETED: "Wait until the thread completes successfully before closing it.", SESSION_CREATE_FAILED: "Check workspace permissions and available disk space, then retry.", TIMEOUT: "Increase timeout, wait on fewer threads, or interrupt slow threads.", ABORTED: "Retry the operation if the thread should still run.", UNKNOWN: "Retry the operation or inspect extension logs for more detail." };
 function getThreadToolErrorDetails(toolResult: AgentToolResult<unknown>): ThreadToolErrorDetails | undefined { return (toolResult.details as ThreadToolErrorResult | undefined)?.error; }
 function renderErrorFallback(toolResult: AgentToolResult<unknown>, theme: Theme): Text { const fg = theme.fg.bind(theme); const errorDetails = getThreadToolErrorDetails(toolResult); const message = errorDetails?.message ?? getFallbackText(toolResult); const hint = errorDetails ? THREAD_TOOL_ERROR_HINTS[errorDetails.code] : undefined; const lines = [fg("error", message)]; if (hint) lines.push(fg("muted", hint)); return new Text(lines.join("\n"), 0, 0); }
 

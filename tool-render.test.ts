@@ -9,7 +9,7 @@ import type {
 	ThreadSummary,
 	WaitThreadItem,
 	WaitThreadResult,
-} from "./thread-manager.ts";
+} from "./contracts.ts";
 import { THREAD_TOOL_ERROR_CODES } from "./thread-tool-error.ts";
 import { toolError } from "./tools/common.ts";
 import {

@@ -7,7 +7,8 @@ import {
 	type ThreadSessionInfo,
 } from "./persistence.ts";
 import { resolveStatusFeedIndicator, statusFeedIndicatorGlyph } from "./status-feed.ts";
-import type { ThreadManager, ThreadRuntimeStatus } from "./thread-manager.ts";
+import type { ThreadRuntimeStatus } from "./contracts.ts";
+import type { ThreadManager } from "./thread-manager.ts";
 import type { ThreadCompletedStatus } from "./types.ts";
 
 export const THREAD_PICKER_STATUS_ID = "pi-threads-picker";

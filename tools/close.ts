@@ -1,14 +1,8 @@
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { CloseThreadParamsSchema } from "../contracts.ts";
 import type { ThreadManager } from "../thread-manager.ts";
 import { renderCloseThreadCall, renderCloseThreadResult } from "../tool-render.ts";
 import { runTool } from "./common.ts";
-
-const CloseThreadParams = Type.Object({
-	thread_id: Type.String({
-		description: "Completed thread ID to archive/close",
-	}),
-});
 
 export function registerCloseThreadTool(pi: ExtensionAPI, manager: ThreadManager): void {
 	pi.registerTool(
@@ -17,7 +11,7 @@ export function registerCloseThreadTool(pi: ExtensionAPI, manager: ThreadManager
 			label: "Close Thread",
 			description:
 				"Archive a completed subagent thread by marking thread_completed status as closed. Does not kill running threads.",
-			parameters: CloseThreadParams,
+			parameters: CloseThreadParamsSchema,
 			renderCall: renderCloseThreadCall,
 			renderResult: renderCloseThreadResult,
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

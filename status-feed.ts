@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { StatusFeedEntry, ThreadRuntimeStatus } from "./thread-manager.ts";
+import type { ThreadRuntimeStatus } from "./contracts.ts";
+import type { StatusFeedEntry } from "./thread-manager.ts";
 import type { ThreadCompletedStatus } from "./types.ts";
 
 export const STATUS_FEED_WIDGET_ID = "pi-threads-status-feed";
