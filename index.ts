@@ -1,5 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { parsePollIntervalMs, startChildMessagePoller } from "./child-message-poller.ts";
+import {
+	type ChildMessagePollerHandle,
+	parsePollIntervalMs,
+	startChildMessagePoller,
+} from "./child-message-poller.ts";
 import { isThreadSession } from "./persistence.ts";
 import { registerThreadRenderers } from "./renderers.ts";
 import { registerThreadPicker } from "./thread-picker.ts";
@@ -33,16 +37,29 @@ export default function (pi: ExtensionAPI) {
 		default: String(SEND_POLL_INTERVAL_MS),
 	});
 
+	let childMessagePoller: ChildMessagePollerHandle | undefined;
+
+	const stopChildMessagePoller = (): void => {
+		childMessagePoller?.stop();
+		childMessagePoller = undefined;
+	};
+
 	pi.on("session_start", async (_event, ctx) => {
 		threadManager.bindContext(ctx);
 
 		if (isThreadSession(ctx.sessionManager)) {
-			startChildMessagePoller(pi, ctx, {
+			stopChildMessagePoller();
+			childMessagePoller = startChildMessagePoller(pi, ctx, {
 				pollIntervalMs: parsePollIntervalMs(pi.getFlag(SEND_POLL_FLAG)),
 			});
 			return;
 		}
 
+		stopChildMessagePoller();
 		await threadManager.resume(ctx);
+	});
+
+	pi.on("session_shutdown", () => {
+		stopChildMessagePoller();
 	});
 }
