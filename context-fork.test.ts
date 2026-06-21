@@ -1,9 +1,6 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
 	applyForkedContext,
 	forkParentContextIntoChild,
@@ -11,40 +8,10 @@ import {
 	normalizeForkTurns,
 	selectEntriesForFork,
 } from "./context-fork.ts";
-
-const TEST_USAGE = {
-	input: 0,
-	output: 0,
-	cacheRead: 0,
-	cacheWrite: 0,
-	totalTokens: 0,
-	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-};
+import { EMPTY_USAGE, setupSessionFixture } from "./test/fixtures/session.ts";
 
 describe("context-fork", () => {
-	const tempDirs: string[] = [];
-	const sessionFiles: string[] = [];
-
-	afterEach(() => {
-		for (const file of sessionFiles.splice(0)) {
-			rmSync(file, { force: true });
-		}
-		for (const dir of tempDirs.splice(0)) {
-			rmSync(dir, { recursive: true, force: true });
-		}
-	});
-
-	function createWorkspace(): string {
-		const dir = mkdtempSync(join(tmpdir(), "pi-threads-context-fork-"));
-		tempDirs.push(dir);
-		return dir;
-	}
-
-	function trackSession(manager: SessionManager): SessionManager {
-		const sessionFile = manager.getSessionFile();
-		if (sessionFile) sessionFiles.push(sessionFile);
-		return manager;
-	}
+	const { createWorkspace, trackSession } = setupSessionFixture("pi-threads-context-fork-");
 
 	function appendUser(session: SessionManager, text: string): void {
 		session.appendMessage({ role: "user", content: text, timestamp: Date.now() });
@@ -57,7 +24,7 @@ describe("context-fork", () => {
 			api: "test",
 			provider: "test",
 			model: "test",
-			usage: TEST_USAGE,
+			usage: EMPTY_USAGE,
 			stopReason: "stop",
 			timestamp: Date.now(),
 		});
@@ -77,7 +44,7 @@ describe("context-fork", () => {
 			api: "test",
 			provider: "test",
 			model: "test",
-			usage: TEST_USAGE,
+			usage: EMPTY_USAGE,
 			stopReason: "toolUse",
 			timestamp: Date.now(),
 		});

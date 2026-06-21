@@ -1,57 +1,13 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { writeThreadMeta, writeThreadSpawnedDurable } from "./persistence.ts";
+import { setupSessionFixture } from "./test/fixtures/session.ts";
 import { registerThreadPicker, ThreadNavigator } from "./thread-picker.ts";
 import { ThreadManager } from "./thread-manager.ts";
 
 describe("ThreadNavigator", () => {
-	const tempDirs: string[] = [];
-	const sessionFiles: string[] = [];
-
-	afterEach(() => {
-		for (const file of sessionFiles.splice(0)) {
-			rmSync(file, { force: true });
-		}
-		for (const dir of tempDirs.splice(0)) {
-			rmSync(dir, { recursive: true, force: true });
-		}
-	});
-
-	function createWorkspace(): string {
-		const dir = mkdtempSync(join(tmpdir(), "pi-threads-picker-test-"));
-		tempDirs.push(dir);
-		return dir;
-	}
-
-	function trackSession(manager: SessionManager): SessionManager {
-		const sessionFile = manager.getSessionFile();
-		if (sessionFile) sessionFiles.push(sessionFile);
-		return manager;
-	}
-
-	function persistSession(manager: SessionManager): void {
-		manager.appendMessage({
-			role: "assistant",
-			content: [{ type: "text", text: "persist" }],
-			api: "test",
-			provider: "test",
-			model: "test",
-			usage: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-			stopReason: "stop",
-			timestamp: Date.now(),
-		});
-	}
+	const { createWorkspace, trackSession, persistSession } = setupSessionFixture("pi-threads-picker-test-");
 
 	function createContext(cwd: string): ExtensionContext {
 		const parent = trackSession(SessionManager.create(cwd));
