@@ -11,7 +11,7 @@ import {
 	type ThreadCompletedStatus,
 	type ThreadId,
 	type ThreadInterruptedActivity,
-	type ThreadMetaData,
+	type ThreadMeta,
 	type ThreadSendActivity,
 	type ThreadSpawnedActivity,
 	type ThreadSpawnedData,
@@ -114,7 +114,7 @@ export function parseInterAgentMessage(text: string): InterAgentCommunication | 
 export function isThreadMetaEntry(entry: SessionEntry): entry is SessionEntry & {
 	type: "custom";
 	customType: typeof THREAD_ENTRY_TYPES.META;
-	data: ThreadMetaData;
+	data: ThreadMeta;
 } {
 	return entry.type === "custom" && entry.customType === THREAD_ENTRY_TYPES.META;
 }
@@ -135,7 +135,7 @@ export function isThreadCompletedEntry(entry: SessionEntry): entry is SessionEnt
 	return entry.type === "custom" && entry.customType === THREAD_ENTRY_TYPES.COMPLETED;
 }
 
-export function findFirstThreadMeta(entries: SessionEntry[]): ThreadMetaData | undefined {
+export function findFirstThreadMeta(entries: SessionEntry[]): ThreadMeta | undefined {
 	for (const entry of entries) {
 		if (isThreadMetaEntry(entry)) {
 			return entry.data;
@@ -175,7 +175,7 @@ export function isThreadSession(sessionManager: SessionEntryReader): boolean {
 
 export interface ThreadSessionInfo {
 	path: string;
-	meta: ThreadMetaData;
+	meta: ThreadMeta;
 	completion?: ThreadCompletedData;
 	model?: string;
 }
@@ -297,7 +297,7 @@ export async function listThreadSessions(
 }
 
 /** Write thread_meta as the first custom entry in a child session. */
-export function writeThreadMeta(sessionManager: SessionManager, data: ThreadMetaData): string {
+export function writeThreadMeta(sessionManager: SessionManager, data: ThreadMeta): string {
 	return sessionManager.appendCustomEntry(THREAD_ENTRY_TYPES.META, data);
 }
 

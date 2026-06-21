@@ -35,7 +35,7 @@ export interface InterAgentCommunication {
  * First custom entry in a child thread session.
  * Marks the session as a thread session (distinct from regular user sessions).
  */
-export interface ThreadMetaData {
+export interface ThreadMeta {
 	parent_id: string;
 	thread_id: ThreadId;
 	thread_name: string;
