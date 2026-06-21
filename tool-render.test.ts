@@ -10,6 +10,7 @@ import type {
 	WaitThreadItem,
 	WaitThreadResult,
 } from "./thread-manager.ts";
+import { THREAD_TOOL_ERROR_CODES } from "./thread-tool-error.ts";
 import { toolError } from "./tools/common.ts";
 import {
 	fmtThreadUsage,
@@ -147,10 +148,10 @@ describe("tool-render helpers", () => {
 		).toBe("↑1.2k ↓340 $0.0042 claude-sonnet");
 	});
 
-	it("renderResult handlers return fallback text on tool errors", () => {
+	it("renderResult handlers return fallback text and hints on tool errors", () => {
 		const theme = createTheme();
-		const errorMessage = "Thread abc123 not found";
-		const errorResult = toolError(errorMessage) as AgentToolResult<unknown>;
+		const errorMessage = "Thread not found: abc123";
+		const errorResult = toolError({ code: THREAD_TOOL_ERROR_CODES.THREAD_NOT_FOUND, message: errorMessage, thread_id: "abc123" }) as AgentToolResult<unknown>;
 		const spawnArgs = {
 			task: "scan repo",
 			thread_name: "worker",
@@ -185,18 +186,15 @@ describe("tool-render helpers", () => {
 			}),
 		];
 
-		for (const component of cases) {
-			expect(renderComponentText(component)).toContain(errorMessage);
-		}
+		for (const component of cases) { const text = renderComponentText(component); expect(text).toContain(errorMessage); expect(text).toContain("Use list_threads to find valid thread IDs"); }
 
 		const spawnViaToolResultFlag = renderSpawnThreadResult(
-			toolError("spawn failed") as AgentToolResult<SpawnThreadResult>,
+			toolError({ code: THREAD_TOOL_ERROR_CODES.UNKNOWN, message: "spawn failed" }) as unknown as AgentToolResult<SpawnThreadResult>,
 			{ expanded: true },
 			theme,
 			{ args: spawnArgs },
 		);
-		expect(renderComponentText(spawnViaToolResultFlag)).toContain("spawn failed");
-		expect(renderComponentText(spawnViaToolResultFlag)).not.toContain("spawned");
+		const spawnErrorText = renderComponentText(spawnViaToolResultFlag); expect(spawnErrorText).toContain("spawn failed"); expect(spawnErrorText).toContain("Retry the operation"); expect(spawnErrorText).not.toContain("spawned");
 	});
 
 	it("models wait thread item shape used by renderers", () => {

@@ -26,6 +26,7 @@ import {
 	ThreadWaitTimeoutError,
 	type WaitThreadUpdate,
 } from "./thread-manager.ts";
+import { ThreadToolError, THREAD_TOOL_ERROR_CODES } from "./thread-tool-error.ts";
 import { THREAD_ENTRY_TYPES, THREAD_TRANSCRIPT_TYPES } from "./types.ts";
 
 const TEST_USAGE = {
@@ -919,9 +920,7 @@ describe("ThreadManager", () => {
 		});
 		const ctx = createContext(cwd);
 
-		await expect(manager.wait(ctx, { thread_ids: ["missing-thread"] })).rejects.toThrow(
-			"Thread not found: missing-thread",
-		);
+		let error: unknown; try { await manager.wait(ctx, { thread_ids: ["missing-thread"] }); } catch (caught) { error = caught; } expect(error).toBeInstanceOf(ThreadToolError); expect(error).toMatchObject({ code: THREAD_TOOL_ERROR_CODES.THREAD_NOT_FOUND, message: "Thread not found: missing-thread", details: { code: THREAD_TOOL_ERROR_CODES.THREAD_NOT_FOUND, thread_id: "missing-thread" } });
 	});
 
 	it("interrupt completes when subprocess never emits exit", async () => {

@@ -24,6 +24,7 @@ import type {
 	WaitThreadParams,
 	WaitThreadResult,
 } from "./thread-manager.ts";
+import { type ThreadToolErrorCode, type ThreadToolErrorDetails, type ThreadToolErrorResult } from "./thread-tool-error.ts";
 import type { ThreadCompletedStatus } from "./types.ts";
 
 const COLLAPSED_ACTIVITY_COUNT = 8;
@@ -92,9 +93,9 @@ function isToolResultError<T>(
 	return Boolean(result.isError || context?.isError);
 }
 
-function renderErrorFallback(toolResult: AgentToolResult<unknown>): Text {
-	return new Text(getFallbackText(toolResult), 0, 0);
-}
+const THREAD_TOOL_ERROR_HINTS: Record<ThreadToolErrorCode, string> = { THREAD_NOT_FOUND: "Use list_threads to find valid thread IDs in this workspace.", THREAD_NOT_RUNNING: "Wait for the thread to finish or use interrupt_thread if it is stuck.", THREAD_STILL_RUNNING: "Use interrupt_thread to stop the thread before closing it.", THREAD_NOT_COMPLETED: "Wait until the thread completes successfully before closing it.", SESSION_CREATE_FAILED: "Check workspace permissions and available disk space, then retry.", TIMEOUT: "Increase timeout, wait on fewer threads, or interrupt slow threads.", UNKNOWN: "Retry the operation or inspect extension logs for more detail." };
+function getThreadToolErrorDetails(toolResult: AgentToolResult<unknown>): ThreadToolErrorDetails | undefined { return (toolResult.details as ThreadToolErrorResult | undefined)?.error; }
+function renderErrorFallback(toolResult: AgentToolResult<unknown>, theme: Theme): Text { const fg = theme.fg.bind(theme); const errorDetails = getThreadToolErrorDetails(toolResult); const message = errorDetails?.message ?? getFallbackText(toolResult); const hint = errorDetails ? THREAD_TOOL_ERROR_HINTS[errorDetails.code] : undefined; const lines = [fg("error", message)]; if (hint) lines.push(fg("muted", hint)); return new Text(lines.join("\n"), 0, 0); }
 
 function statusIcon(status: ThreadToolStatus, fg: Theme["fg"]): string {
 	const indicator = resolveStatusFeedIndicator(status);
@@ -240,11 +241,11 @@ export function renderSpawnThreadResult(
 	theme: Theme,
 	context: { args: SpawnThreadParams; isError?: boolean },
 ) {
-	if (isToolResultError(toolResult, context)) return renderErrorFallback(toolResult);
+	if (isToolResultError(toolResult, context)) return renderErrorFallback(toolResult, theme);
 
 	const result = toolResult.details;
 	const fg = theme.fg.bind(theme);
-	if (!result) return renderErrorFallback(toolResult);
+	if (!result) return renderErrorFallback(toolResult, theme);
 
 	const task = result.task ?? context.args.task;
 	const icon = statusIcon("running", fg);
@@ -283,11 +284,11 @@ export function renderWaitThreadResult(
 	theme: Theme,
 	context?: { isError?: boolean },
 ) {
-	if (isToolResultError(toolResult, context)) return renderErrorFallback(toolResult);
+	if (isToolResultError(toolResult, context)) return renderErrorFallback(toolResult, theme);
 
 	const fg = theme.fg.bind(theme);
 	const details = toolResult.details;
-	if (!details) return renderErrorFallback(toolResult);
+	if (!details) return renderErrorFallback(toolResult, theme);
 
 	const threads = "threads" in details ? details.threads : details.waiting;
 	if (!Array.isArray(threads) || threads.length === 0) {
@@ -359,11 +360,11 @@ export function renderListThreadsResult(
 	theme: Theme,
 	context?: { isError?: boolean },
 ) {
-	if (isToolResultError(toolResult, context)) return renderErrorFallback(toolResult);
+	if (isToolResultError(toolResult, context)) return renderErrorFallback(toolResult, theme);
 
 	const fg = theme.fg.bind(theme);
 	const threads = toolResult.details?.threads;
-	if (!Array.isArray(threads)) return renderErrorFallback(toolResult);
+	if (!Array.isArray(threads)) return renderErrorFallback(toolResult, theme);
 	if (threads.length === 0) return new Text(fg("muted", "No threads match the requested filter."), 0, 0);
 
 	const tree = sortThreadsTree(threads);
@@ -406,11 +407,11 @@ export function renderSendToThreadResult(
 	theme: Theme,
 	context?: { isError?: boolean },
 ) {
-	if (isToolResultError(toolResult, context)) return renderErrorFallback(toolResult);
+	if (isToolResultError(toolResult, context)) return renderErrorFallback(toolResult, theme);
 
 	const result = toolResult.details;
 	const fg = theme.fg.bind(theme);
-	if (!result) return renderErrorFallback(toolResult);
+	if (!result) return renderErrorFallback(toolResult, theme);
 	const icon = statusIcon("running", fg);
 	const text = `${icon} ${fg("toolTitle", theme.bold("sent"))} ${fg("accent", result.thread_name)} ${fg("dim", `(${result.thread_id})`)}`;
 	return new Text(text, 0, 0);
@@ -428,11 +429,11 @@ export function renderInterruptThreadResult(
 	theme: Theme,
 	context?: { isError?: boolean },
 ) {
-	if (isToolResultError(toolResult, context)) return renderErrorFallback(toolResult);
+	if (isToolResultError(toolResult, context)) return renderErrorFallback(toolResult, theme);
 
 	const result = toolResult.details;
 	const fg = theme.fg.bind(theme);
-	if (!result) return renderErrorFallback(toolResult);
+	if (!result) return renderErrorFallback(toolResult, theme);
 	const icon = statusIcon("aborted", fg);
 	const text = `${icon} ${fg("toolTitle", theme.bold("interrupted"))} ${fg("accent", result.thread_name)} ${fg("dim", `(${result.thread_id})`)}`;
 	return new Text(text, 0, 0);
@@ -450,11 +451,11 @@ export function renderCloseThreadResult(
 	theme: Theme,
 	context?: { isError?: boolean },
 ) {
-	if (isToolResultError(toolResult, context)) return renderErrorFallback(toolResult);
+	if (isToolResultError(toolResult, context)) return renderErrorFallback(toolResult, theme);
 
 	const result = toolResult.details;
 	const fg = theme.fg.bind(theme);
-	if (!result) return renderErrorFallback(toolResult);
+	if (!result) return renderErrorFallback(toolResult, theme);
 	const icon = statusIcon("closed", fg);
 	const text = `${icon} ${fg("toolTitle", theme.bold("closed"))} ${fg("accent", result.thread_name)} ${fg("dim", `(${result.thread_id})`)}`;
 	return new Text(text, 0, 0);

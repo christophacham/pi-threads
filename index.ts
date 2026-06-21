@@ -18,6 +18,7 @@ import { SEND_POLL_FLAG, SEND_POLL_INTERVAL_MS } from "./thread-subprocess.ts";
 import { registerThreadTools } from "./tools/index.ts";
 
 export * from "./types.ts";
+export * from "./thread-tool-error.ts";
 export * from "./persistence.ts";
 export * from "./thread-manager.ts";
 export { registerThreadRenderers, getTranscriptContent } from "./renderers.ts";

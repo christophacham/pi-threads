@@ -49,6 +49,7 @@ import {
 	WAIT_POLL_INTERVAL_MS,
 	type RingBuffer,
 } from "./thread-subprocess.ts";
+import { ThreadToolError, THREAD_TOOL_ERROR_CODES } from "./thread-tool-error.ts";
 import type { ThreadCompletedStatus, ThreadId, ThreadMetaData } from "./types.ts";
 
 export type ThreadRuntimeStatus = ThreadCompletedStatus | "running";
@@ -244,16 +245,11 @@ function persistThreadSession(session: SessionManager): void {
 }
 
 /** Thrown when pollThreadCompletions exceeds its deadline before all threads finish. */
-export class ThreadWaitTimeoutError extends Error {
+export class ThreadWaitTimeoutError extends ThreadToolError {
 	readonly partialResults: ReadonlyMap<ThreadId, ThreadCompletedStatus>;
 	readonly pendingThreadIds: readonly ThreadId[];
-
-	constructor(
-		message: string,
-		partialResults: Map<ThreadId, ThreadCompletedStatus>,
-		pendingThreadIds: ThreadId[],
-	) {
-		super(message);
+	constructor(message: string, partialResults: Map<ThreadId, ThreadCompletedStatus>, pendingThreadIds: ThreadId[]) {
+		super(THREAD_TOOL_ERROR_CODES.TIMEOUT, message, { pending_thread_ids: [...pendingThreadIds], partial_results: Object.fromEntries(partialResults) });
 		this.name = "ThreadWaitTimeoutError";
 		this.partialResults = partialResults;
 		this.pendingThreadIds = pendingThreadIds;
@@ -359,7 +355,7 @@ export class ThreadManager {
 		const childSession = SessionManager.create(cwd);
 		const sessionFile = childSession.getSessionFile();
 		if (!sessionFile) {
-			throw new Error("Failed to create thread session file");
+			throw new ThreadToolError(THREAD_TOOL_ERROR_CODES.SESSION_CREATE_FAILED, "Failed to create thread session file");
 		}
 
 		const threadId = childSession.getSessionId();
@@ -441,7 +437,7 @@ export class ThreadManager {
 			params.thread_ids.map(async (threadId) => {
 				const session = await findThreadSessionById(ctx.cwd, threadId);
 				if (!session) {
-					throw new Error(`Thread not found: ${threadId}`);
+					throw new ThreadToolError(THREAD_TOOL_ERROR_CODES.THREAD_NOT_FOUND, `Thread not found: ${threadId}`, { thread_id: threadId });
 				}
 				return session;
 			}),
@@ -569,12 +565,12 @@ export class ThreadManager {
 	async send(ctx: ExtensionContext, params: SendToThreadParams): Promise<SendToThreadResult> {
 		const session = await findThreadSessionById(ctx.cwd, params.thread_id);
 		if (!session) {
-			throw new Error(`Thread not found: ${params.thread_id}`);
+			throw new ThreadToolError(THREAD_TOOL_ERROR_CODES.THREAD_NOT_FOUND, `Thread not found: ${params.thread_id}`, { thread_id: params.thread_id });
 		}
 
 		const record = this.threads.get(params.thread_id);
 		if (!record || record.status !== "running") {
-			throw new Error(`Thread is not running: ${params.thread_id}`);
+			throw new ThreadToolError(THREAD_TOOL_ERROR_CODES.THREAD_NOT_RUNNING, `Thread is not running: ${params.thread_id}`, { thread_id: params.thread_id, status: record?.status ?? "running" });
 		}
 
 		const parentMeta = findFirstThreadMeta(ctx.sessionManager.getEntries());
@@ -605,7 +601,7 @@ export class ThreadManager {
 	async interrupt(ctx: ExtensionContext, params: InterruptThreadParams): Promise<InterruptThreadResult> {
 		const record = this.threads.get(params.thread_id);
 		if (!record || record.status !== "running") {
-			throw new Error(`Thread is not running: ${params.thread_id}`);
+			throw new ThreadToolError(THREAD_TOOL_ERROR_CODES.THREAD_NOT_RUNNING, `Thread is not running: ${params.thread_id}`, { thread_id: params.thread_id, status: record?.status ?? "running" });
 		}
 
 		const childSession = SessionManager.open(record.sessionFile);
@@ -633,17 +629,17 @@ export class ThreadManager {
 
 	async close(ctx: ExtensionContext, params: CloseThreadParams): Promise<CloseThreadResult> {
 		if (this.threads.has(params.thread_id)) {
-			throw new Error(`Thread is still running; use interrupt_thread instead: ${params.thread_id}`);
+			throw new ThreadToolError(THREAD_TOOL_ERROR_CODES.THREAD_STILL_RUNNING, `Thread is still running; use interrupt_thread instead: ${params.thread_id}`, { thread_id: params.thread_id, status: "running" });
 		}
 
 		const session = await findThreadSessionById(ctx.cwd, params.thread_id);
 		if (!session) {
-			throw new Error(`Thread not found: ${params.thread_id}`);
+			throw new ThreadToolError(THREAD_TOOL_ERROR_CODES.THREAD_NOT_FOUND, `Thread not found: ${params.thread_id}`, { thread_id: params.thread_id });
 		}
 
 		if (session.completion?.status !== "completed") {
 			const status = session.completion?.status ?? "running";
-			throw new Error(`Thread is not completed; cannot close: ${params.thread_id} (status: ${status})`);
+			throw new ThreadToolError(THREAD_TOOL_ERROR_CODES.THREAD_NOT_COMPLETED, `Thread is not completed; cannot close: ${params.thread_id} (status: ${status})`, { thread_id: params.thread_id, status });
 		}
 
 		const childSession = SessionManager.open(session.path);
