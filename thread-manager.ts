@@ -11,14 +11,6 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { forkParentContextIntoChild } from "./context-fork.ts";
 import {
 	appendInterAgentUserMessage,
-	createThreadClosedActivity,
-	createThreadInterruptedActivity,
-	createThreadSendActivity,
-	createThreadSpawnedActivity,
-	createThreadWaitActivity,
-	emitThreadClosedTranscript,
-	emitThreadInterruptedTranscript,
-	emitThreadWaitTranscript,
 	extractThreadOutput,
 	buildThreadChildrenMap,
 	findFirstThreadMeta,
@@ -31,9 +23,8 @@ import {
 	THREAD_SESSION_BOOTSTRAP_TEXT,
 	writeThreadCompleted,
 	writeThreadMeta,
-	writeThreadSendDual,
-	writeThreadSpawnedDual,
 } from "./persistence.ts";
+import { ThreadEvents } from "./thread-events.ts";
 import { parseChildStdoutLine } from "./status-feed.ts";
 import {
 	buildThreadPiArgs,
@@ -122,6 +113,7 @@ export interface ThreadSubprocessSpawner {
 export interface ThreadManagerDeps {
 	spawner?: ThreadSubprocessSpawner;
 	sleep?: (ms: number) => Promise<void>;
+	threadEvents?: ThreadEvents;
 }
 
 function resolveThreadStatus(
@@ -271,6 +263,7 @@ export class ThreadManager {
 	private threadChildren = new Map<string, Set<ThreadId>>();
 	private readonly spawner: ThreadSubprocessSpawner;
 	private readonly sleep: (ms: number) => Promise<void>;
+	private readonly threadEvents: ThreadEvents;
 	private ctx: ExtensionContext | null = null;
 
 	constructor(
@@ -279,6 +272,7 @@ export class ThreadManager {
 	) {
 		this.spawner = deps.spawner ?? { spawn };
 		this.sleep = deps.sleep ?? delay;
+		this.threadEvents = deps.threadEvents ?? new ThreadEvents(pi);
 	}
 
 	bindContext(ctx: ExtensionContext): void {
@@ -375,8 +369,7 @@ export class ThreadManager {
 			task: params.task,
 		});
 
-		writeThreadSpawnedDual(
-			this.pi,
+		this.threadEvents.recordSpawn(
 			{
 				thread_id: threadId,
 				thread_name: params.thread_name,
@@ -384,12 +377,7 @@ export class ThreadManager {
 				depth,
 				agent_type: params.agent_type,
 			},
-			createThreadSpawnedActivity({
-				thread_id: threadId,
-				thread_name: params.thread_name,
-				agent_type: params.agent_type,
-				task: params.task,
-			}),
+			params.task,
 		);
 
 		return {
@@ -417,16 +405,13 @@ export class ThreadManager {
 		);
 
 		for (const session of sessions) {
-			emitThreadWaitTranscript(
-				this.pi,
-				createThreadWaitActivity({
-					thread_id: session.meta.thread_id,
-					thread_name: session.meta.thread_name,
-					agent_type: session.meta.agent_type,
-					phase: "started",
-					status: "Running",
-				}),
-			);
+			this.threadEvents.recordWait({
+				thread_id: session.meta.thread_id,
+				thread_name: session.meta.thread_name,
+				agent_type: session.meta.agent_type,
+				phase: "started",
+				status: "Running",
+			});
 		}
 
 		const timeoutMs = params.timeout !== undefined ? params.timeout * 1000 : undefined;
@@ -503,16 +488,13 @@ export class ThreadManager {
 			const output = extractThreadOutput(entries);
 			const activities = active ? [...active.activityBuffer.lines] : [];
 
-			emitThreadWaitTranscript(
-				this.pi,
-				createThreadWaitActivity({
-					thread_id: threadId,
-					thread_name: session.meta.thread_name,
-					agent_type: session.meta.agent_type,
-					phase: "finished",
-					status,
-				}),
-			);
+			this.threadEvents.recordWait({
+				thread_id: threadId,
+				thread_name: session.meta.thread_name,
+				agent_type: session.meta.agent_type,
+				phase: "finished",
+				status,
+			});
 
 			this.threads.delete(threadId);
 
@@ -570,15 +552,12 @@ export class ThreadManager {
 			content: params.message,
 		});
 
-		writeThreadSendDual(
-			this.pi,
-			createThreadSendActivity({
-				thread_id: params.thread_id,
-				thread_name: record.threadName,
-				agent_type: record.agent_type,
-				message_preview: params.message,
-			}),
-		);
+		this.threadEvents.recordSend({
+			thread_id: params.thread_id,
+			thread_name: record.threadName,
+			agent_type: record.agent_type,
+			message_preview: params.message,
+		});
 
 		return {
 			thread_id: params.thread_id,
@@ -593,18 +572,14 @@ export class ThreadManager {
 		}
 
 		const childSession = SessionManager.open(record.sessionFile);
-		writeThreadCompleted(childSession, { status: "aborted" });
+		this.threadEvents.recordInterrupt({
+			childSession,
+			thread_id: params.thread_id,
+			thread_name: record.threadName,
+			agent_type: record.agent_type,
+		});
 
 		await this.killSubprocess(record.process);
-
-		emitThreadInterruptedTranscript(
-			this.pi,
-			createThreadInterruptedActivity({
-				thread_id: params.thread_id,
-				thread_name: record.threadName,
-				agent_type: record.agent_type,
-			}),
-		);
 
 		this.threads.delete(params.thread_id);
 
@@ -631,16 +606,13 @@ export class ThreadManager {
 		}
 
 		const childSession = SessionManager.open(session.path);
-		writeThreadCompleted(childSession, { status: "closed" });
 
-		emitThreadClosedTranscript(
-			this.pi,
-			createThreadClosedActivity({
-				thread_id: params.thread_id,
-				thread_name: session.meta.thread_name,
-				agent_type: session.meta.agent_type,
-			}),
-		);
+		this.threadEvents.recordClose({
+			childSession,
+			thread_id: params.thread_id,
+			thread_name: session.meta.thread_name,
+			agent_type: session.meta.agent_type,
+		});
 
 		this.threads.delete(params.thread_id);
 
