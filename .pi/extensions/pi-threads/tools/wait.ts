@@ -1,9 +1,21 @@
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { WaitThreadParamsSchema } from "../contracts.ts";
+import { Type } from "typebox";
 import { clearStatusFeedWidget, updateStatusFeedWidget } from "../status-feed.ts";
 import type { ThreadManager } from "../thread-manager.ts";
 import { renderWaitThreadCall, renderWaitThreadResult } from "../tool-render.ts";
 import { runTool } from "./common.ts";
+
+const WaitThreadParams = Type.Object({
+	thread_ids: Type.Array(Type.String(), {
+		description: "One or more thread IDs to wait on until completion",
+		minItems: 1,
+	}),
+	timeout: Type.Optional(
+		Type.Number({
+			description: "Optional timeout in seconds for the wait operation",
+		}),
+	),
+});
 
 export function registerWaitThreadTool(pi: ExtensionAPI, manager: ThreadManager): void {
 	pi.registerTool(
@@ -11,11 +23,11 @@ export function registerWaitThreadTool(pi: ExtensionAPI, manager: ThreadManager)
 			name: "wait_thread",
 			label: "Wait Thread",
 			description:
-				"Block until one or more subagent threads complete, streaming per-thread status via onUpdate. When timeout elapses before all threads finish, returns partial results with timedOut: true (still-running threads remain in status running).",
-			parameters: WaitThreadParamsSchema,
+				"Block until one or more subagent threads complete, streaming per-thread status via onUpdate.",
+			parameters: WaitThreadParams,
 			renderCall: renderWaitThreadCall,
 			renderResult: renderWaitThreadResult,
-			async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			async execute(_toolCallId, params, _signal, onUpdate, ctx) {
 				return runTool(
 					async () => {
 						try {
@@ -37,29 +49,22 @@ export function registerWaitThreadTool(pi: ExtensionAPI, manager: ThreadManager)
 										details: update,
 									});
 								},
-								signal,
 							);
 						} finally {
 							clearStatusFeedWidget(ctx);
 						}
 					},
-					(result) => {
-						const lines = result.threads.map(
-							(thread) => `${thread.thread_name}: ${thread.status}`,
-						);
-						if (result.timedOut) {
-							lines.unshift("(timed out — partial results)");
-						}
-						return {
-							content: [
-								{
-									type: "text",
-									text: lines.join("\n"),
-								},
-							],
-							details: result,
-						};
-					},
+					(result) => ({
+						content: [
+							{
+								type: "text",
+								text: result.threads
+									.map((thread) => `${thread.thread_name}: ${thread.status}`)
+									.join("\n"),
+							},
+						],
+						details: result,
+					}),
 				);
 			},
 		}),

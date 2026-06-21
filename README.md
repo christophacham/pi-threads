@@ -33,7 +33,7 @@ Restart Pi (or use `/reload` if the extension is in an auto-discovered location)
 | Tool | Purpose |
 |------|---------|
 | `spawn_thread` | Start a persistent subagent in an isolated `pi` subprocess. Returns `thread_id` and `thread_name`. |
-| `wait_thread` | Block until one or more threads finish; streams per-thread status via `onUpdate`. |
+| `wait_thread` | Block until one or more threads finish; streams per-thread status via `onUpdate`. On timeout, returns partial results with `timedOut: true`. |
 | `send_to_thread` | Inject a message into a running thread (inter-agent communication envelope). |
 | `list_threads` | List thread sessions with status, task, and usage. Closed threads are hidden unless `status: "all"`. |
 | `interrupt_thread` | Force-stop a running thread subprocess and mark it aborted. |

@@ -21,7 +21,6 @@ import {
 	pollThreadCompletions,
 	ThreadManager,
 	ThreadWaitAbortedError,
-	ThreadWaitTimeoutError,
 	type WaitThreadUpdate,
 } from "./thread-manager.ts";
 import { setupSessionFixture } from "./test/fixtures/session.ts";
@@ -825,39 +824,30 @@ describe("ThreadManager", () => {
 				},
 			);
 
-			expect(result.get("a")).toBe("completed");
-			expect(result.get("b")).toBe("completed");
+			expect(result.completions.get("a")).toBe("completed");
+			expect(result.completions.get("b")).toBe("completed");
+			expect(result.timedOut).toBe(false);
 		});
 
-		it("throws on timeout with partial results", async () => {
+		it("returns partial results on timeout", async () => {
 			const statuses = new Map<string, "completed" | undefined>([
 				["fast-thread", "completed"],
 				["slow-thread", undefined],
 			]);
 
-			let error: unknown;
-			try {
-				await pollThreadCompletions(
-					["fast-thread", "slow-thread"],
-					(threadId) => statuses.get(threadId),
-					{
-						timeoutMs: 5,
-						pollIntervalMs: 1,
-						sleep: async () => {},
-					},
-				);
-			} catch (caught) {
-				error = caught;
-			}
+			const result = await pollThreadCompletions(
+				["fast-thread", "slow-thread"],
+				(threadId) => statuses.get(threadId),
+				{
+					timeoutMs: 5,
+					pollIntervalMs: 1,
+					sleep: async () => {},
+				},
+			);
 
-			expect(error).toBeInstanceOf(ThreadWaitTimeoutError);
-			expect(error).toMatchObject({
-				message: "Timed out waiting for threads: slow-thread",
-				pendingThreadIds: ["slow-thread"],
-			});
-			if (error instanceof ThreadWaitTimeoutError) {
-				expect(error.partialResults.get("fast-thread")).toBe("completed");
-			}
+			expect(result.timedOut).toBe(true);
+			expect(result.completions.get("fast-thread")).toBe("completed");
+			expect(result.completions.has("slow-thread")).toBe(false);
 		});
 
 		it("invokes onPoll between completion checks", async () => {
@@ -879,7 +869,7 @@ describe("ThreadManager", () => {
 				},
 			);
 
-				expect(result.get("pending")).toBe("completed");
+				expect(result.completions.get("pending")).toBe("completed");
 			expect(polls).toBeGreaterThan(0);
 		});
 
@@ -1142,7 +1132,96 @@ describe("ThreadManager", () => {
 			});
 		});
 
-		it("times out when threads do not complete", async () => {
+		it("opens each child session once per poll tick while waiting", async () => {
+			const cwd = createWorkspace();
+			const pi = createMockPi();
+			const alpha = createThreadSession(cwd, {
+				thread_id: "thread-alpha",
+				thread_name: "alpha",
+				task: "Task A",
+			});
+			const beta = createThreadSession(cwd, {
+				thread_id: "thread-beta",
+				thread_name: "beta",
+				task: "Task B",
+			});
+			const sessionPaths = [alpha.getSessionFile()!, beta.getSessionFile()!];
+			let pollTick = 0;
+			const manager = new ThreadManager(pi, {
+				sleep: async () => {
+					pollTick++;
+					if (pollTick === 1) {
+						writeThreadCompleted(SessionManager.open(sessionPaths[0]!), { status: "completed" });
+						writeThreadCompleted(SessionManager.open(sessionPaths[1]!), { status: "completed" });
+					}
+				},
+			});
+			const ctx = createContext(cwd);
+			const openSpy = vi.spyOn(SessionManager, "open");
+			const countPollOpens = () =>
+				openSpy.mock.calls.filter(([path]) => sessionPaths.includes(path as string)).length;
+
+			const opensBefore = countPollOpens();
+			await manager.wait(
+				ctx,
+				{ thread_ids: ["thread-alpha", "thread-beta"] },
+				() => {},
+			);
+			const pollOpens = countPollOpens() - opensBefore;
+
+			expect(pollOpens).toBe(2);
+			openSpy.mockRestore();
+		});
+
+		it("skips session disk read while subprocess is active", async () => {
+			const cwd = createWorkspace();
+			const pi = createMockPi();
+			const controller = new AbortController();
+			const running = trackSession(SessionManager.create(cwd));
+			writeThreadMeta(running, {
+				parent_id: "parent-1",
+				thread_id: "thread-running",
+				thread_name: "runner",
+				depth: 1,
+				task: "Long task",
+				agent_type: "worker",
+			});
+			persistSession(running);
+			const sessionPath = running.getSessionFile()!;
+
+			const manager = new ThreadManager(pi, {
+				sleep: async () => {
+					controller.abort();
+				},
+			});
+			const ctx = createContext(cwd);
+			const record = {
+				process: createMockProcess(),
+				sessionFile: sessionPath,
+				threadName: "runner",
+				status: "running" as const,
+				agent_type: "worker",
+				depth: 1,
+				task: "Long task",
+				stdoutBuffer: createRingBuffer(16),
+				stderrBuffer: createRingBuffer(16),
+				activityBuffer: createRingBuffer(16),
+			};
+			(manager as unknown as { threads: Map<string, typeof record> }).threads.set("thread-running", record);
+
+			const openSpy = vi.spyOn(SessionManager, "open");
+			const opensBefore = openSpy.mock.calls.filter(([path]) => path === sessionPath).length;
+
+			await expect(
+				manager.wait(ctx, { thread_ids: ["thread-running"] }, undefined, controller.signal),
+			).rejects.toBeInstanceOf(ThreadWaitAbortedError);
+
+			const opensAfter = openSpy.mock.calls.filter(([path]) => path === sessionPath).length;
+			expect(opensAfter - opensBefore).toBe(1);
+			openSpy.mockRestore();
+		});
+
+		it("returns partial results when threads do not complete before timeout", async () => {
 			const cwd = createWorkspace();
 			const manager = new ThreadManager(createMockPi(), {
 				sleep: async () => {},
@@ -1155,9 +1234,19 @@ describe("ThreadManager", () => {
 				task: "Never finishes",
 			});
 
-			await expect(
-				manager.wait(ctx, { thread_ids: ["thread-slow"], timeout: 0.001 }),
-			).rejects.toThrow("Timed out waiting for threads: thread-slow");
+			const result = await manager.wait(ctx, { thread_ids: ["thread-slow"], timeout: 0.001 });
+
+			expect(result).toEqual({
+				timedOut: true,
+				threads: [
+					expect.objectContaining({
+						thread_id: "thread-slow",
+						thread_name: "slow",
+						status: "running",
+						task: "Never finishes",
+					}),
+				],
+			});
 		});
 
 		it("timeout reconciles stale active map entries for completed threads", async () => {
@@ -1185,9 +1274,26 @@ describe("ThreadManager", () => {
 			const fastRecord = manager.getActiveThreads().get(fast.thread_id)!;
 			writeThreadCompleted(SessionManager.open(fastRecord.sessionFile), { status: "completed" });
 
-			await expect(
-				manager.wait(ctx, { thread_ids: [fast.thread_id, slow.thread_id], timeout: 0.001 }),
-			).rejects.toThrow("Timed out waiting for threads: " + slow.thread_id);
+			const result = await manager.wait(ctx, {
+				thread_ids: [fast.thread_id, slow.thread_id],
+				timeout: 0.001,
+			});
+
+			expect(result.timedOut).toBe(true);
+			expect(result.threads).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						thread_id: fast.thread_id,
+						thread_name: "fast",
+						status: "completed",
+					}),
+					expect.objectContaining({
+						thread_id: slow.thread_id,
+						thread_name: "slow",
+						status: "running",
+					}),
+				]),
+			);
 
 			expect(manager.getActiveThreads().has(fast.thread_id)).toBe(false);
 			expect(manager.getActiveThreads().has(slow.thread_id)).toBe(true);

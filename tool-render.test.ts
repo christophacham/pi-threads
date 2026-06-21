@@ -197,6 +197,43 @@ describe("tool-render helpers", () => {
 		const spawnErrorText = renderComponentText(spawnViaToolResultFlag); expect(spawnErrorText).toContain("spawn failed"); expect(spawnErrorText).toContain("Retry the operation"); expect(spawnErrorText).not.toContain("spawned");
 	});
 
+	it("renders timed-out wait_thread results as partial success with guidance", () => {
+		const theme = createTheme();
+		const result: WaitThreadResult = {
+			timedOut: true,
+			threads: [
+				{
+					thread_id: "fast",
+					thread_name: "fast",
+					agent_type: "worker",
+					task: "done",
+					status: "completed",
+				},
+				{
+					thread_id: "slow",
+					thread_name: "slow",
+					agent_type: "worker",
+					task: "still going",
+					status: "running",
+				},
+			],
+		};
+		const toolResult = {
+			content: [{ type: "text", text: "partial" }],
+			details: result,
+		} as AgentToolResult<WaitThreadResult>;
+
+		const expanded = renderComponentText(
+			renderWaitThreadResult(toolResult, { expanded: true, isPartial: false }, theme),
+		);
+
+		expect(expanded).toContain("fast");
+		expect(expanded).toContain("slow");
+		expect(expanded).toContain("timed out (partial)");
+		expect(expanded).toContain("partial results");
+		expect(expanded).toContain("Call wait_thread again");
+	});
+
 	it("models wait thread item shape used by renderers", () => {
 		const item: WaitThreadItem = {
 			thread_id: "t1",

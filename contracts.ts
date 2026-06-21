@@ -63,7 +63,8 @@ export const WaitThreadParamsSchema = Type.Object({
 	}),
 	timeout: Type.Optional(
 		Type.Number({
-			description: "Optional timeout in seconds for the wait operation",
+			description:
+				"Optional timeout in seconds. When it elapses before all threads finish, the tool returns partial results with timedOut: true instead of failing.",
 		}),
 	),
 });
@@ -87,6 +88,8 @@ export interface WaitThreadUpdate {
 
 export interface WaitThreadResult {
 	threads: WaitThreadItem[];
+	/** True when timeout elapsed before every requested thread reached a terminal state. */
+	timedOut?: boolean;
 }
 
 export const SendToThreadParamsSchema = Type.Object({
