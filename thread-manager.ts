@@ -6,7 +6,6 @@
  * to child session files for the child poller to deliver.
  */
 import { type ChildProcess, spawn } from "node:child_process";
-import type { Usage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { forkParentContextIntoChild } from "./context-fork.ts";
@@ -49,10 +48,46 @@ import {
 	WAIT_POLL_INTERVAL_MS,
 	type RingBuffer,
 } from "./thread-subprocess.ts";
+import type {
+	CloseThreadParams,
+	CloseThreadResult,
+	InterruptThreadParams,
+	InterruptThreadResult,
+	ListThreadsFilter,
+	ListThreadsParams,
+	SendToThreadParams,
+	SendToThreadResult,
+	SpawnThreadParams,
+	SpawnThreadResult,
+	ThreadRuntimeStatus,
+	ThreadSummary,
+	WaitThreadParams,
+	WaitThreadItem,
+	WaitThreadResult,
+	WaitThreadUpdate,
+} from "./contracts.ts";
 import { ThreadToolError, THREAD_TOOL_ERROR_CODES } from "./thread-tool-error.ts";
 import type { ThreadCompletedStatus, ThreadId, ThreadMetaData } from "./types.ts";
 
-export type ThreadRuntimeStatus = ThreadCompletedStatus | "running";
+export type {
+	CloseThreadParams,
+	CloseThreadResult,
+	ForkTurns,
+	InterruptThreadParams,
+	InterruptThreadResult,
+	ListThreadsFilter,
+	ListThreadsParams,
+	SendToThreadParams,
+	SendToThreadResult,
+	SpawnThreadParams,
+	SpawnThreadResult,
+	ThreadRuntimeStatus,
+	ThreadSummary,
+	WaitThreadItem,
+	WaitThreadParams,
+	WaitThreadResult,
+	WaitThreadUpdate,
+} from "./contracts.ts";
 
 export interface ThreadRecord {
 	process: ChildProcess | null;
@@ -65,96 +100,6 @@ export interface ThreadRecord {
 	stdoutBuffer: RingBuffer;
 	stderrBuffer: RingBuffer;
 	activityBuffer: RingBuffer;
-}
-
-export type ForkTurns = "none" | "all" | number;
-
-export interface SpawnThreadParams {
-	task: string;
-	thread_name: string;
-	agent_type: string;
-	model?: string;
-	tools?: string[];
-	fork_turns?: ForkTurns;
-	cwd?: string;
-}
-
-export interface SpawnThreadResult {
-	thread_id: ThreadId;
-	thread_name: string;
-	agent_type: string;
-	task: string;
-}
-
-export interface WaitThreadParams {
-	thread_ids: ThreadId[];
-	timeout?: number;
-}
-
-export interface WaitThreadItem {
-	thread_id: ThreadId;
-	thread_name: string;
-	agent_type: string;
-	task: string;
-	status: ThreadRuntimeStatus | ThreadCompletedStatus;
-	activities?: string[];
-	output?: string;
-	usage?: Usage;
-}
-
-export interface WaitThreadUpdate {
-	waiting: WaitThreadItem[];
-}
-
-export interface WaitThreadResult {
-	threads: WaitThreadItem[];
-}
-
-export interface SendToThreadParams {
-	thread_id: ThreadId;
-	message: string;
-}
-
-export interface SendToThreadResult {
-	thread_id: ThreadId;
-	thread_name: string;
-}
-
-export type ListThreadsFilter = "running" | "completed" | "error" | "aborted" | "all";
-
-export interface ThreadSummary {
-	thread_id: ThreadId;
-	thread_name: string;
-	parent_id: string;
-	depth: number;
-	status: ThreadRuntimeStatus;
-	task: string;
-	usage?: Usage;
-	model?: string;
-}
-
-export interface ListThreadsParams {
-	status?: ListThreadsFilter;
-}
-
-export interface InterruptThreadParams {
-	thread_id: ThreadId;
-}
-
-export interface InterruptThreadResult {
-	thread_id: ThreadId;
-	thread_name: string;
-	status: "aborted";
-}
-
-export interface CloseThreadParams {
-	thread_id: ThreadId;
-}
-
-export interface CloseThreadResult {
-	thread_id: ThreadId;
-	thread_name: string;
-	status: "closed";
 }
 
 export interface ResumeResult {
@@ -256,6 +201,18 @@ export class ThreadWaitTimeoutError extends ThreadToolError {
 	}
 }
 
+/** Thrown when pollThreadCompletions is cancelled via AbortSignal before all threads finish. */
+export class ThreadWaitAbortedError extends ThreadToolError {
+	readonly partialResults: ReadonlyMap<ThreadId, ThreadCompletedStatus>;
+	readonly pendingThreadIds: readonly ThreadId[];
+	constructor(message: string, partialResults: Map<ThreadId, ThreadCompletedStatus>, pendingThreadIds: ThreadId[]) {
+		super(THREAD_TOOL_ERROR_CODES.ABORTED, message, { pending_thread_ids: [...pendingThreadIds], partial_results: Object.fromEntries(partialResults) });
+		this.name = "ThreadWaitAbortedError";
+		this.partialResults = partialResults;
+		this.pendingThreadIds = pendingThreadIds;
+	}
+}
+
 /** Poll child sessions until all requested threads reach a terminal state. */
 export async function pollThreadCompletions(
 	threadIds: ThreadId[],
@@ -265,6 +222,7 @@ export async function pollThreadCompletions(
 		pollIntervalMs?: number;
 		onPoll?: () => void;
 		sleep?: (ms: number) => Promise<void>;
+		signal?: AbortSignal;
 	} = {},
 ): Promise<Map<ThreadId, ThreadCompletedStatus>> {
 	const {
@@ -272,12 +230,22 @@ export async function pollThreadCompletions(
 		pollIntervalMs = WAIT_POLL_INTERVAL_MS,
 		onPoll,
 		sleep = delay,
+		signal,
 	} = options;
 
 	const deadline = timeoutMs !== undefined ? Date.now() + timeoutMs : undefined;
 	const results = new Map<ThreadId, ThreadCompletedStatus>();
 
 	while (results.size < threadIds.length) {
+		if (signal?.aborted) {
+			const pendingThreadIds = threadIds.filter((id) => !results.has(id));
+			throw new ThreadWaitAbortedError(
+				`Wait aborted before threads completed: ${pendingThreadIds.join(", ")}`,
+				results,
+				pendingThreadIds,
+			);
+		}
+
 		if (deadline !== undefined && Date.now() >= deadline) {
 			const pendingThreadIds = threadIds.filter((id) => !results.has(id));
 			throw new ThreadWaitTimeoutError(
@@ -345,14 +313,19 @@ export class ThreadManager {
 		return feed;
 	}
 
-	async spawn(ctx: ExtensionContext, params: SpawnThreadParams): Promise<SpawnThreadResult> {
+	async spawn(ctx: ExtensionContext, params: SpawnThreadParams, signal?: AbortSignal): Promise<SpawnThreadResult> {
 		const cwd = params.cwd ?? ctx.cwd;
 		const parentId = ctx.sessionManager.getSessionId();
 		const parentMeta = findFirstThreadMeta(ctx.sessionManager.getEntries());
 		const depth = resolveSpawnDepth(parentMeta);
 		const author = resolveParentAuthor(parentMeta);
 
-		const childSession = SessionManager.create(cwd);
+		const parentSessionFile = ctx.sessionManager.getSessionFile();
+		if (!parentSessionFile) {
+			throw new ThreadToolError(THREAD_TOOL_ERROR_CODES.SESSION_CREATE_FAILED, "Failed to resolve parent session file");
+		}
+
+		const childSession = SessionManager.create(cwd, undefined, { parentSession: parentSessionFile });
 		const sessionFile = childSession.getSessionFile();
 		if (!sessionFile) {
 			throw new ThreadToolError(THREAD_TOOL_ERROR_CODES.SESSION_CREATE_FAILED, "Failed to create thread session file");
@@ -389,6 +362,11 @@ export class ThreadManager {
 			activityBuffer: createRingBuffer(OUTPUT_RING_BUFFER_SIZE),
 		};
 		this.threads.set(threadId, record);
+
+		if (signal?.aborted) {
+			this.threads.delete(threadId);
+			throw new ThreadToolError(THREAD_TOOL_ERROR_CODES.ABORTED, "Spawn aborted before starting subprocess", { thread_id: threadId });
+		}
 
 		record.process = this.startSubprocess({
 			sessionFile,
@@ -432,6 +410,7 @@ export class ThreadManager {
 		ctx: ExtensionContext,
 		params: WaitThreadParams,
 		onUpdate?: (update: WaitThreadUpdate) => void,
+		signal?: AbortSignal,
 	): Promise<WaitThreadResult> {
 		const sessions = await Promise.all(
 			params.thread_ids.map(async (threadId) => {
@@ -477,6 +456,7 @@ export class ThreadManager {
 					timeoutMs,
 					pollIntervalMs: WAIT_POLL_INTERVAL_MS,
 					sleep: this.sleep,
+					signal,
 					onPoll: () => {
 						if (!onUpdate) return;
 						onUpdate({
@@ -499,7 +479,7 @@ export class ThreadManager {
 				},
 			);
 		} catch (error) {
-			if (error instanceof ThreadWaitTimeoutError) {
+			if (error instanceof ThreadWaitTimeoutError || error instanceof ThreadWaitAbortedError) {
 				this.reconcileActiveThreadsAfterWaitTimeout(params.thread_ids, sessions);
 			}
 			throw error;
