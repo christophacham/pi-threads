@@ -1,5 +1,8 @@
 node_modules/
 
+# Local Pi project config (symlink extensions here; do not commit copies)
+.pi/
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
