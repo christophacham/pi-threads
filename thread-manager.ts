@@ -15,10 +15,11 @@ import {
 	buildThreadChildrenMap,
 	findFirstThreadMeta,
 	findLatestThreadCompleted,
-	findThreadSessionById,
 	formatInterAgentMessage,
+	getThreadSessionIndex,
 	listThreadSessions,
 	shouldResumeThreadSession,
+	upsertThreadSessionScanCache,
 	type ThreadSessionInfo,
 	THREAD_SESSION_BOOTSTRAP_TEXT,
 	writeThreadCompleted,
@@ -377,6 +378,18 @@ export class ThreadManager {
 			params.task,
 		);
 
+		upsertThreadSessionScanCache(cwd, {
+			path: sessionFile,
+			meta: {
+				parent_id: parentId,
+				thread_id: threadId,
+				thread_name: params.thread_name,
+				depth,
+				task: params.task,
+				agent_type: params.agent_type,
+			},
+		});
+
 		return {
 			thread_id: threadId,
 			thread_name: params.thread_name,
@@ -391,15 +404,14 @@ export class ThreadManager {
 		onUpdate?: (update: WaitThreadUpdate) => void,
 		signal?: AbortSignal,
 	): Promise<WaitThreadResult> {
-		const sessions = await Promise.all(
-			params.thread_ids.map(async (threadId) => {
-				const session = await findThreadSessionById(ctx.cwd, threadId);
-				if (!session) {
-					throw new ThreadToolError(THREAD_TOOL_ERROR_CODES.THREAD_NOT_FOUND, `Thread not found: ${threadId}`, { thread_id: threadId });
-				}
-				return session;
-			}),
-		);
+		const sessionIndex = await getThreadSessionIndex(ctx.cwd);
+		const sessions = params.thread_ids.map((threadId) => {
+			const session = sessionIndex.get(threadId);
+			if (!session) {
+				throw new ThreadToolError(THREAD_TOOL_ERROR_CODES.THREAD_NOT_FOUND, `Thread not found: ${threadId}`, { thread_id: threadId });
+			}
+			return session;
+		});
 
 		for (const session of sessions) {
 			this.threadEvents.recordWait({
@@ -530,7 +542,7 @@ export class ThreadManager {
 	}
 
 	async sendToThread(ctx: ExtensionContext, params: SendToThreadParams): Promise<SendToThreadResult> {
-		const session = await findThreadSessionById(ctx.cwd, params.thread_id);
+		const session = (await getThreadSessionIndex(ctx.cwd)).get(params.thread_id);
 		if (!session) {
 			throw new ThreadToolError(THREAD_TOOL_ERROR_CODES.THREAD_NOT_FOUND, `Thread not found: ${params.thread_id}`, { thread_id: params.thread_id });
 		}
@@ -578,6 +590,14 @@ export class ThreadManager {
 
 		await this.subprocessRunner.kill(record.process);
 
+		const cachedSession = (await getThreadSessionIndex(ctx.cwd)).get(params.thread_id);
+		if (cachedSession) {
+			upsertThreadSessionScanCache(ctx.cwd, {
+				...cachedSession,
+				completion: { status: "aborted" },
+			});
+		}
+
 		this.threads.delete(params.thread_id);
 
 		return {
@@ -592,7 +612,7 @@ export class ThreadManager {
 			throw new ThreadToolError(THREAD_TOOL_ERROR_CODES.THREAD_STILL_RUNNING, `Thread is still running; use interrupt_thread instead: ${params.thread_id}`, { thread_id: params.thread_id, status: "running" });
 		}
 
-		const session = await findThreadSessionById(ctx.cwd, params.thread_id);
+		const session = (await getThreadSessionIndex(ctx.cwd)).get(params.thread_id);
 		if (!session) {
 			throw new ThreadToolError(THREAD_TOOL_ERROR_CODES.THREAD_NOT_FOUND, `Thread not found: ${params.thread_id}`, { thread_id: params.thread_id });
 		}
@@ -609,6 +629,11 @@ export class ThreadManager {
 			thread_id: params.thread_id,
 			thread_name: session.meta.thread_name,
 			agent_type: session.meta.agent_type,
+		});
+
+		upsertThreadSessionScanCache(ctx.cwd, {
+			...session,
+			completion: { status: "closed" },
 		});
 
 		this.threads.delete(params.thread_id);
@@ -698,7 +723,7 @@ export class ThreadManager {
 
 	private reconcileActiveThreadsAfterWaitTimeout(
 		threadIds: ThreadId[],
-		sessions: Awaited<ReturnType<typeof findThreadSessionById>>[],
+		sessions: ThreadSessionInfo[],
 	): void {
 		for (const threadId of threadIds) {
 			const session = sessions.find((item) => item?.meta.thread_id === threadId);

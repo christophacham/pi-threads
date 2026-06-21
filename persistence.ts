@@ -189,6 +189,78 @@ export interface ThreadSessionInfo {
 	model?: string;
 }
 
+interface ThreadSessionScanCache {
+	sessions: ThreadSessionInfo[];
+	index: Map<string, ThreadSessionInfo>;
+}
+
+const threadSessionScanCache = new Map<string, ThreadSessionScanCache>();
+
+function threadSessionScanCacheKey(cwd: string, sessionDir?: string): string {
+	return sessionDir ? `${cwd}\0${sessionDir}` : cwd;
+}
+
+function buildThreadSessionIndex(sessions: ThreadSessionInfo[]): Map<string, ThreadSessionInfo> {
+	return new Map(sessions.map((session) => [session.meta.thread_id, session]));
+}
+
+function setThreadSessionScanCache(
+	cwd: string,
+	sessions: ThreadSessionInfo[],
+	sessionDir?: string,
+): ThreadSessionScanCache {
+	const cache: ThreadSessionScanCache = {
+		sessions,
+		index: buildThreadSessionIndex(sessions),
+	};
+	threadSessionScanCache.set(threadSessionScanCacheKey(cwd, sessionDir), cache);
+	return cache;
+}
+
+/** Drop cached thread session scan results for a workspace. */
+export function invalidateThreadSessionScanCache(cwd: string, sessionDir?: string): void {
+	threadSessionScanCache.delete(threadSessionScanCacheKey(cwd, sessionDir));
+}
+
+/** Insert or replace a single thread session in the scan cache. */
+export function upsertThreadSessionScanCache(
+	cwd: string,
+	session: ThreadSessionInfo,
+	sessionDir?: string,
+): void {
+	const key = threadSessionScanCacheKey(cwd, sessionDir);
+	const cached = threadSessionScanCache.get(key);
+	if (!cached) {
+		setThreadSessionScanCache(cwd, [session], sessionDir);
+		return;
+	}
+
+	const existingIndex = cached.sessions.findIndex(
+		(item) => item.meta.thread_id === session.meta.thread_id,
+	);
+	if (existingIndex >= 0) {
+		cached.sessions[existingIndex] = session;
+	} else {
+		cached.sessions.push(session);
+	}
+	cached.index.set(session.meta.thread_id, session);
+}
+
+/** Return cached thread_id→session map, populating via listThreadSessions when empty. */
+export async function getThreadSessionIndex(
+	cwd: string,
+	sessionDir?: string,
+): Promise<Map<string, ThreadSessionInfo>> {
+	const key = threadSessionScanCacheKey(cwd, sessionDir);
+	const cached = threadSessionScanCache.get(key);
+	if (cached) {
+		return cached.index;
+	}
+
+	await listThreadSessions(cwd, sessionDir);
+	return threadSessionScanCache.get(key)!.index;
+}
+
 /** True when a thread session has thread_meta but no terminal thread_completed entry. */
 export function shouldResumeThreadSession(session: ThreadSessionInfo): boolean {
 	return session.completion === undefined;
@@ -237,8 +309,8 @@ export async function findThreadSessionById(
 	threadId: string,
 	sessionDir?: string,
 ): Promise<ThreadSessionInfo | undefined> {
-	const sessions = await listThreadSessions(cwd, sessionDir);
-	return sessions.find((session) => session.meta.thread_id === threadId);
+	const index = await getThreadSessionIndex(cwd, sessionDir);
+	return index.get(threadId);
 }
 
 /** Bootstrap assistant message written so Pi persists the child session file. */
@@ -303,6 +375,7 @@ export async function listThreadSessions(
 		});
 	}
 
+	setThreadSessionScanCache(cwd, threadSessions, sessionDir);
 	return threadSessions;
 }
 

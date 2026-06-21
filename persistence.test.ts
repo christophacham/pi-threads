@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	appendInterAgentUserMessage,
 	buildThreadChildrenMap,
@@ -11,7 +11,10 @@ import {
 	createThreadSpawnedActivity,
 	emitThreadSpawnedTranscript,
 	findAllThreadSpawned,
+	findThreadSessionById,
 	findUnprocessedUserMessages,
+	getThreadSessionIndex,
+	invalidateThreadSessionScanCache,
 	shouldResumeThreadSession,
 	extractThreadOutput,
 	findFirstThreadMeta,
@@ -22,6 +25,7 @@ import {
 	isThreadSession,
 	listThreadSessions,
 	parseInterAgentMessage,
+	upsertThreadSessionScanCache,
 	writeThreadCompleted,
 	writeThreadMeta,
 	writeThreadSendDual,
@@ -444,6 +448,180 @@ describe("thread session entries", () => {
 			display: true,
 			details: event,
 		});
+	});
+
+	it("getThreadSessionIndex returns a map keyed by thread_id", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-threads-index-"));
+		tempDirs.push(dir);
+
+		const thread = SessionManager.create(dir, dir);
+		writeThreadMeta(thread, {
+			parent_id: "parent-1",
+			thread_id: "thread-1",
+			thread_name: "worker",
+			depth: 1,
+			task: "do work",
+			agent_type: "worker",
+		});
+		thread.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "working" }],
+			api: "test",
+			provider: "test",
+			model: "test",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+
+		const index = await getThreadSessionIndex(dir, dir);
+		expect(index.get("thread-1")?.meta.thread_name).toBe("worker");
+	});
+
+	it("reuses scan cache across findThreadSessionById lookups", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-threads-cache-"));
+		tempDirs.push(dir);
+		invalidateThreadSessionScanCache(dir, dir);
+
+		const thread = SessionManager.create(dir, dir);
+		writeThreadMeta(thread, {
+			parent_id: "parent-1",
+			thread_id: "thread-1",
+			thread_name: "worker",
+			depth: 1,
+			task: "do work",
+			agent_type: "worker",
+		});
+		thread.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "working" }],
+			api: "test",
+			provider: "test",
+			model: "test",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+
+		const listSpy = vi.spyOn(SessionManager, "list");
+		await listThreadSessions(dir, dir);
+		expect(listSpy).toHaveBeenCalledTimes(1);
+
+		listSpy.mockClear();
+		await findThreadSessionById(dir, "thread-1", dir);
+		await findThreadSessionById(dir, "thread-1", dir);
+		expect(listSpy).not.toHaveBeenCalled();
+
+		listSpy.mockRestore();
+	});
+
+	it("invalidates scan cache when listThreadSessions refreshes", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-threads-refresh-"));
+		tempDirs.push(dir);
+		invalidateThreadSessionScanCache(dir, dir);
+
+		const thread = SessionManager.create(dir, dir);
+		writeThreadMeta(thread, {
+			parent_id: "parent-1",
+			thread_id: "thread-1",
+			thread_name: "worker",
+			depth: 1,
+			task: "do work",
+			agent_type: "worker",
+		});
+		thread.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "working" }],
+			api: "test",
+			provider: "test",
+			model: "test",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+
+		await listThreadSessions(dir, dir);
+
+		const second = SessionManager.create(dir, dir);
+		writeThreadMeta(second, {
+			parent_id: "parent-1",
+			thread_id: "thread-2",
+			thread_name: "helper",
+			depth: 1,
+			task: "assist",
+			agent_type: "worker",
+		});
+		second.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "helping" }],
+			api: "test",
+			provider: "test",
+			model: "test",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+
+		expect((await getThreadSessionIndex(dir, dir)).has("thread-2")).toBe(false);
+
+		await listThreadSessions(dir, dir);
+		expect((await getThreadSessionIndex(dir, dir)).get("thread-2")?.meta.thread_name).toBe("helper");
+	});
+
+	it("upsertThreadSessionScanCache adds sessions without rescanning", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-threads-upsert-"));
+		tempDirs.push(dir);
+		invalidateThreadSessionScanCache(dir, dir);
+
+		upsertThreadSessionScanCache(
+			dir,
+			{
+				path: "/tmp/thread-3.jsonl",
+				meta: {
+					parent_id: "parent-1",
+					thread_id: "thread-3",
+					thread_name: "upserted",
+					depth: 1,
+					task: "upsert",
+					agent_type: "worker",
+				},
+			},
+			dir,
+		);
+
+		const listSpy = vi.spyOn(SessionManager, "list");
+		const session = await findThreadSessionById(dir, "thread-3", dir);
+		expect(session?.meta.thread_name).toBe("upserted");
+		expect(listSpy).not.toHaveBeenCalled();
+		listSpy.mockRestore();
 	});
 
 	it("emitThreadSpawnedTranscript sends inline event", () => {
