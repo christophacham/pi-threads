@@ -1,5 +1,6 @@
 {
 	"name": "pi-threads",
+	"description": "Pi extension for persistent subagent threads: spawn, wait, send, list, interrupt, and close isolated child pi sessions with optional parent context fork.",
 	"private": true,
 	"version": "0.1.0",
 	"type": "module",
