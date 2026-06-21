@@ -18,7 +18,14 @@ pi install /path/to/pi-threads
 pi install -l ./pi-threads
 ```
 
-**Project extension directory:** copy or symlink this repo into `.pi/extensions/pi-threads/` (Pi discovers `.pi/extensions/*/index.ts` after the project is trusted).
+**Project extension directory:** symlink this repo into `.pi/extensions/pi-threads/` (Pi discovers `.pi/extensions/*/index.ts` after the project is trusted):
+
+```bash
+mkdir -p .pi/extensions
+ln -sfn ../.. .pi/extensions/pi-threads   # from repo root
+```
+
+Prefer a symlink over copying — a stale copy will not pick up fixes (e.g. removed `alt+left`/`alt+right` shortcuts that conflict with pi tree navigation).
 
 **One-off load:**
 
