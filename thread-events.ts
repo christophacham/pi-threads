@@ -2,17 +2,19 @@
  * Facade for thread protocol event recording.
  *
  * Encapsulates dual-write rules: spawn/send write durable + transcript;
- * wait, interrupted, and closed are transcript-only (interrupt/close also
- * append thread_completed to the child session).
+ * wait, completed, interrupted, and closed are transcript-only (interrupt/close
+ * also append thread_completed to the child session).
  */
 import type { SessionManager } from "@earendil-works/pi-coding-agent";
 import {
 	createThreadClosedActivity,
+	createThreadCompletedActivity,
 	createThreadInterruptedActivity,
 	createThreadSendActivity,
 	createThreadSpawnedActivity,
 	createThreadWaitActivity,
 	emitThreadClosedTranscript,
+	emitThreadCompletedTranscript,
 	emitThreadInterruptedTranscript,
 	emitThreadWaitTranscript,
 	type DurableWriter,
@@ -21,7 +23,7 @@ import {
 	writeThreadSendDual,
 	writeThreadSpawnedDual,
 } from "./persistence.ts";
-import type { ThreadId, ThreadSpawnedData } from "./types.ts";
+import type { ThreadCompletedStatus, ThreadId, ThreadSpawnedData } from "./types.ts";
 
 export interface ThreadEventsWriter extends DurableWriter, TranscriptEmitter {}
 
@@ -60,6 +62,18 @@ export class ThreadEvents {
 		emitThreadWaitTranscript(this.writer, createThreadWaitActivity(params));
 	}
 
+	recordCompleted(params: {
+		thread_id: ThreadId;
+		thread_name: string;
+		agent_type?: string;
+		status: ThreadCompletedStatus;
+		result_preview?: string;
+		usage?: Parameters<typeof createThreadCompletedActivity>[0]["usage"];
+		model?: string;
+	}): void {
+		emitThreadCompletedTranscript(this.writer, createThreadCompletedActivity(params));
+	}
+
 	recordInterrupt(params: {
 		childSession: SessionManager;
 		thread_id: ThreadId;
@@ -82,6 +96,8 @@ export class ThreadEvents {
 		thread_id: ThreadId;
 		thread_name: string;
 		agent_type: string;
+		usage?: Parameters<typeof createThreadClosedActivity>[0]["usage"];
+		model?: string;
 	}): void {
 		writeThreadCompleted(params.childSession, { status: "closed" });
 		emitThreadClosedTranscript(
@@ -90,6 +106,8 @@ export class ThreadEvents {
 				thread_id: params.thread_id,
 				thread_name: params.thread_name,
 				agent_type: params.agent_type,
+				usage: params.usage,
+				model: params.model,
 			}),
 		);
 	}

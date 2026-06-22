@@ -16,6 +16,7 @@ import {
 	type InterAgentCommunication,
 	type SubAgentActivityEvent,
 	type ThreadClosedActivity,
+	type ThreadCompletedActivity,
 	type ThreadCompletedData,
 	type ThreadCompletedStatus,
 	type ThreadId,
@@ -452,6 +453,15 @@ export function writeThreadSendDual(
 	emitThreadSendTranscript(writer, event);
 }
 
+export function emitThreadCompletedTranscript(emitter: TranscriptEmitter, event: ThreadCompletedActivity): void {
+	emitter.sendMessage({
+		customType: THREAD_TRANSCRIPT_TYPES.COMPLETED,
+		content: formatCompletedTranscriptContent(event),
+		display: true,
+		details: event,
+	});
+}
+
 export function emitThreadWaitTranscript(emitter: TranscriptEmitter, event: ThreadWaitActivity): void {
 	emitter.sendMessage({
 		customType: THREAD_TRANSCRIPT_TYPES.WAIT,
@@ -492,6 +502,9 @@ export function emitSubAgentActivity(emitter: TranscriptEmitter, event: SubAgent
 			break;
 		case THREAD_TRANSCRIPT_TYPES.WAIT:
 			emitThreadWaitTranscript(emitter, event);
+			break;
+		case THREAD_TRANSCRIPT_TYPES.COMPLETED:
+			emitThreadCompletedTranscript(emitter, event);
 			break;
 		case THREAD_TRANSCRIPT_TYPES.INTERRUPTED:
 			emitThreadInterruptedTranscript(emitter, event);
@@ -534,6 +547,28 @@ export function createThreadSendActivity(params: {
 	};
 }
 
+export function createThreadCompletedActivity(params: {
+	thread_id: ThreadId;
+	thread_name: string;
+	status: ThreadCompletedStatus;
+	result_preview?: string;
+	agent_type?: string;
+	usage?: ThreadCompletedData["usage"];
+	model?: string;
+}): ThreadCompletedActivity {
+	return {
+		customType: THREAD_TRANSCRIPT_TYPES.COMPLETED,
+		kind: "Completed",
+		thread_id: params.thread_id,
+		thread_name: params.thread_name,
+		agent_type: params.agent_type,
+		status: params.status,
+		result_preview: params.result_preview,
+		...(params.usage !== undefined ? { usage: params.usage } : {}),
+		...(params.model !== undefined ? { model: params.model } : {}),
+	};
+}
+
 export function createThreadWaitActivity(params: {
 	thread_id: ThreadId;
 	thread_name: string;
@@ -570,6 +605,8 @@ export function createThreadClosedActivity(params: {
 	thread_id: ThreadId;
 	thread_name: string;
 	agent_type?: string;
+	usage?: ThreadCompletedData["usage"];
+	model?: string;
 }): ThreadClosedActivity {
 	return {
 		customType: THREAD_TRANSCRIPT_TYPES.CLOSED,
@@ -577,6 +614,8 @@ export function createThreadClosedActivity(params: {
 		thread_id: params.thread_id,
 		thread_name: params.thread_name,
 		agent_type: params.agent_type,
+		...(params.usage !== undefined ? { usage: params.usage } : {}),
+		...(params.model !== undefined ? { model: params.model } : {}),
 	};
 }
 
@@ -593,6 +632,11 @@ export function formatSpawnedTranscriptContent(event: ThreadSpawnedActivity): st
 
 export function formatSendTranscriptContent(event: ThreadSendActivity): string {
 	return `Sent input to ${event.thread_name}: ${previewText(event.message_preview)}`;
+}
+
+export function formatCompletedTranscriptContent(event: ThreadCompletedActivity): string {
+	const preview = event.result_preview ? `: ${previewText(event.result_preview)}` : "";
+	return `Background thread finished → ${event.thread_name}: ${event.status}${preview}`;
 }
 
 export function formatWaitTranscriptContent(event: ThreadWaitActivity): string {

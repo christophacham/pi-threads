@@ -22,10 +22,18 @@ import {
 } from "./child-message-poller.ts";
 import { isThreadSession, listThreadSessions } from "./persistence.ts";
 import { registerThreadRenderers } from "./renderers.ts";
+import { createStatusFeedWidgetController } from "./status-feed-widget.ts";
 import { registerThreadPicker } from "./thread-picker.ts";
 import { ThreadManager } from "./thread-manager.ts";
 import { SEND_POLL_FLAG, SEND_POLL_INTERVAL_MS } from "./thread-subprocess.ts";
 import { registerThreadTools } from "./tools/index.ts";
+
+const THREAD_TOOL_NAMES = new Set([
+	"spawn_thread",
+	"wait_thread",
+	"send_to_thread",
+	"interrupt_thread",
+]);
 
 export * from "./contracts.ts";
 export * from "./types.ts";
@@ -37,8 +45,17 @@ export function shouldRespawnThreadsOnSessionStart(reason: SessionStartEvent["re
 
 export default function (pi: ExtensionAPI) {
 	const threadManager = new ThreadManager(pi);
+	const statusFeedWidget = createStatusFeedWidgetController({
+		getFeed: () => threadManager.getStatusFeed(),
+	});
+	threadManager.setStatusFeedListener(() => {
+		statusFeedWidget.refresh();
+		if (threadManager.getStatusFeed().length > 0) {
+			statusFeedWidget.ensurePoller();
+		}
+	});
 	registerThreadRenderers(pi);
-	registerThreadTools(pi, threadManager);
+	registerThreadTools(pi, threadManager, statusFeedWidget);
 	const navigator = registerThreadPicker(pi, threadManager);
 
 	pi.registerFlag(SEND_POLL_FLAG, {
@@ -58,6 +75,7 @@ export default function (pi: ExtensionAPI) {
 		threadManager.bindContext(ctx);
 
 		if (isThreadSession(ctx.sessionManager)) {
+			statusFeedWidget.stopPoller();
 			stopChildMessagePoller();
 			childMessagePoller = startChildMessagePoller(pi, ctx, {
 				pollIntervalMs: parsePollIntervalMs(pi.getFlag(SEND_POLL_FLAG)),
@@ -69,6 +87,7 @@ export default function (pi: ExtensionAPI) {
 
 		stopChildMessagePoller();
 		const sessions = await listThreadSessions(ctx.cwd);
+		statusFeedWidget.bindContext(ctx);
 		if (shouldRespawnThreadsOnSessionStart(event.reason)) {
 			await threadManager.resume(ctx, sessions);
 		}
@@ -76,7 +95,13 @@ export default function (pi: ExtensionAPI) {
 		navigator.updateStatusBar(ctx);
 	});
 
+	pi.on("tool_result", (event, ctx) => {
+		if (!THREAD_TOOL_NAMES.has(event.toolName) || isThreadSession(ctx.sessionManager)) return;
+		statusFeedWidget.bindContext(ctx);
+	});
+
 	pi.on("session_shutdown", () => {
 		stopChildMessagePoller();
+		statusFeedWidget.reset();
 	});
 }

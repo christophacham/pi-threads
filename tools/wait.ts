@@ -1,11 +1,40 @@
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Key, matchesKey } from "@earendil-works/pi-tui";
 import { WaitThreadParamsSchema } from "../contracts.ts";
-import { clearStatusFeedWidget, updateStatusFeedWidget } from "../status-feed.ts";
+import type { StatusFeedWidgetController } from "../status-feed-widget.ts";
 import type { ThreadManager } from "../thread-manager.ts";
 import { renderWaitThreadCall, renderWaitThreadResult } from "../tool-render.ts";
 import { runTool } from "./common.ts";
 
-export function registerWaitThreadTool(pi: ExtensionAPI, manager: ThreadManager): void {
+function combineAbortSignals(...signals: AbortSignal[]): AbortSignal {
+	const abortSignalAny = AbortSignal as typeof AbortSignal & {
+		any?: (signals: AbortSignal[]) => AbortSignal;
+	};
+	if (typeof abortSignalAny.any === "function") {
+		return abortSignalAny.any(signals);
+	}
+
+	const controller = new AbortController();
+	const onAbort = (signal: AbortSignal) => {
+		if (!controller.signal.aborted) {
+			controller.abort(signal.reason);
+		}
+	};
+	for (const signal of signals) {
+		if (signal.aborted) {
+			onAbort(signal);
+			break;
+		}
+		signal.addEventListener("abort", () => onAbort(signal), { once: true });
+	}
+	return controller.signal;
+}
+
+export function registerWaitThreadTool(
+	pi: ExtensionAPI,
+	manager: ThreadManager,
+	statusFeedWidget: StatusFeedWidgetController,
+): void {
 	pi.registerTool(
 		defineTool({
 			name: "wait_thread",
@@ -18,13 +47,25 @@ export function registerWaitThreadTool(pi: ExtensionAPI, manager: ThreadManager)
 			async execute(_toolCallId, params, signal, onUpdate, ctx) {
 				return runTool(
 					async () => {
+						const escController = new AbortController();
+						const combinedSignal = signal
+							? combineAbortSignals(signal, escController.signal)
+							: escController.signal;
+						const onTerminalInput = ctx.hasUI
+							? ctx.ui.onTerminalInput((input) => {
+								if (!matchesKey(input, Key.escape)) return undefined;
+								escController.abort();
+								return { consume: true };
+							})
+							: undefined;
 						try {
-							updateStatusFeedWidget(ctx, manager.getStatusFeed());
+							statusFeedWidget.refresh(ctx);
+							statusFeedWidget.ensurePoller();
 							return await manager.wait(
 								ctx,
 								params,
 								(update) => {
-									updateStatusFeedWidget(ctx, manager.getStatusFeed());
+									statusFeedWidget.refresh(ctx);
 									onUpdate?.({
 										content: [
 											{
@@ -37,10 +78,11 @@ export function registerWaitThreadTool(pi: ExtensionAPI, manager: ThreadManager)
 										details: update,
 									});
 								},
-								signal,
+								combinedSignal,
 							);
 						} finally {
-							clearStatusFeedWidget(ctx);
+							onTerminalInput?.();
+							statusFeedWidget.refresh(ctx);
 						}
 					},
 					(result) => {

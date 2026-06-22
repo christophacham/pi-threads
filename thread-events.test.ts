@@ -102,6 +102,24 @@ describe("ThreadEvents", () => {
 		expect(transcriptMessages[0].customType).toBe(THREAD_TRANSCRIPT_TYPES.SEND);
 	});
 
+	it("recordCompleted writes transcript only", () => {
+		const { writer, durableEntries, transcriptMessages } = createWriter();
+		const events = new ThreadEvents(writer);
+
+		events.recordCompleted({
+			thread_id: "thread-1",
+			thread_name: "worker",
+			agent_type: "worker",
+			status: "completed",
+			result_preview: "done",
+		});
+
+		expect(durableEntries).toEqual([]);
+		expect(transcriptMessages).toHaveLength(1);
+		expect(transcriptMessages[0].customType).toBe(THREAD_TRANSCRIPT_TYPES.COMPLETED);
+		expect(transcriptMessages[0].content).toContain("worker");
+	});
+
 	it("recordWait writes transcript only", () => {
 		const { writer, durableEntries, transcriptMessages } = createWriter();
 		const events = new ThreadEvents(writer);

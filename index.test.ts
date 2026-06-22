@@ -1,25 +1,59 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, SessionStartEvent, Theme } from "@earendil-works/pi-coding-agent";
+import type { Component } from "@earendil-works/pi-tui";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { appendInterAgentUserMessage, writeThreadMeta } from "./persistence.ts";
+import { STATUS_FEED_WIDGET_ID } from "./status-feed.ts";
+import type { StatusFeedEntry } from "./thread-manager.ts";
 
 const bindContext = vi.fn();
-const resume = vi.fn().mockResolvedValue(undefined);
+let statusFeedListener: (() => void) | undefined;
+let statusFeed: StatusFeedEntry[] = [];
+
+const resume = vi.fn().mockImplementation(async () => {
+	statusFeed = [
+		{
+			thread_id: "t1",
+			thread_name: "worker",
+			status: "running",
+			lines: ["read src/index.ts"],
+		},
+	];
+	statusFeedListener?.();
+});
 
 vi.mock("./thread-manager.ts", () => ({
 	ThreadManager: vi.fn().mockImplementation(() => ({
 		bindContext,
 		resume,
+		setStatusFeedListener: vi.fn((listener: (() => void) | undefined) => {
+			statusFeedListener = listener;
+		}),
 		getActiveThreads: vi.fn(() => new Map()),
-		getStatusFeed: vi.fn(() => []),
+		getStatusFeed: vi.fn(() => statusFeed),
 		getThreadChildren: vi.fn(() => []),
 	})),
 }));
 
 import registerExtension, { shouldRespawnThreadsOnSessionStart } from "./index.ts";
+
+function createTheme(): Theme {
+	const fg = (color: string, text: string) => `[${color}]${text}[/]`;
+	return {
+		fg,
+		bg: (_color: string, text: string) => text,
+		bold: (text: string) => `**${text}**`,
+	} as unknown as Theme;
+}
+
+function renderWidgetFactory(factory: unknown, width = 120): string {
+	if (typeof factory !== "function") return "";
+	const component = (factory as (_tui: unknown, theme: Theme) => Component)(undefined, createTheme());
+	return component.render(width).join("\n");
+}
 
 describe("pi-threads extension session lifecycle", () => {
 	const tempDirs: string[] = [];
@@ -40,6 +74,9 @@ describe("pi-threads extension session lifecycle", () => {
 	});
 
 	beforeEach(() => {
+		statusFeed = [];
+		statusFeedListener = undefined;
+
 		const originalSetInterval = globalThis.setInterval.bind(globalThis);
 		const originalClearInterval = globalThis.clearInterval.bind(globalThis);
 
@@ -86,14 +123,19 @@ describe("pi-threads extension session lifecycle", () => {
 	}
 
 	function createContextBase(cwd: string, sessionManager: SessionManager): ExtensionContext {
+		const setWidget = vi.fn();
+		const requestRender = vi.fn();
 		return {
 			cwd,
 			sessionManager,
+			hasUI: true,
 			isIdle: () => true,
 			ui: {
 				notify: vi.fn(),
 				select: vi.fn(),
 				setStatus: vi.fn(),
+				setWidget,
+				requestRender,
 			},
 		} as unknown as ExtensionContext;
 	}
@@ -213,6 +255,31 @@ describe("pi-threads extension session lifecycle", () => {
 		expect(resume).not.toHaveBeenCalled();
 	});
 
+	it("renders status feed widget after session_shutdown then session_start with resumed threads", async () => {
+		const cwd = createWorkspace();
+		const { pi, emit } = createMockPi();
+		registerExtension(pi);
+
+		const parent = createParentContext(cwd);
+		const setWidget = vi.mocked(parent.ui.setWidget);
+
+		await emit("session_start", sessionStartEvent("startup"), parent);
+		setWidget.mockClear();
+
+		await emit("session_shutdown");
+		await emit("session_start", sessionStartEvent("startup"), parent);
+
+		expect(setWidget).toHaveBeenCalledWith(
+			STATUS_FEED_WIDGET_ID,
+			expect.any(Function),
+			{ placement: "belowEditor" },
+		);
+
+		const rendered = renderWidgetFactory(setWidget.mock.calls.at(-1)?.[1]);
+		expect(rendered).toContain("Sub-agents running");
+		expect(rendered).toContain("worker");
+	});
+
 	it("does not leave duplicate intervals after session switch simulation", async () => {
 		const cwd = createWorkspace();
 		const { pi, emit } = createMockPi();
@@ -229,7 +296,7 @@ describe("pi-threads extension session lifecycle", () => {
 		expect(intervalCount).toBe(1);
 
 		await emit("session_start", {}, parent);
-		expect(intervalCount).toBe(0);
+		expect(intervalCount).toBe(1);
 
 		await emit("session_shutdown");
 		expect(intervalCount).toBe(0);

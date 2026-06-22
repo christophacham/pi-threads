@@ -17,6 +17,7 @@ import {
 	SIGKILL_TIMEOUT_MS,
 	WAIT_POLL_INTERVAL_MS,
 } from "./thread-subprocess.ts";
+import { getGlobalSeenMap } from "./completion-dedupe.ts";
 import {
 	pollThreadCompletions,
 	ThreadManager,
@@ -766,6 +767,128 @@ describe("ThreadManager", () => {
 			expect(recordVisibleOnExit).toBe(true);
 		});
 
+		it("notifies and records transcript when a background thread completes", async () => {
+			const cwd = createWorkspace();
+			const pi = createMockPi();
+			getGlobalSeenMap("__pi_threads_completion_seen__").clear();
+			const mockProcess = createMockProcess();
+			const eventHandlers = new Map<string, Array<(...args: unknown[]) => void>>();
+			(mockProcess.on as ReturnType<typeof vi.fn>).mockImplementation(
+				(event: string, handler: (...args: unknown[]) => void) => {
+					const handlers = eventHandlers.get(event) ?? [];
+					handlers.push(handler);
+					eventHandlers.set(event, handlers);
+				},
+			);
+			const manager = new ThreadManager(pi, {
+				spawner: {
+					spawn: vi.fn(() => mockProcess),
+				},
+			});
+			const ctx = createContext(cwd);
+			manager.bindContext(ctx);
+
+			const result = await manager.spawn(ctx, {
+				task: "Research auth",
+				thread_name: "researcher",
+				agent_type: "researcher",
+			});
+
+			const session = (await SessionManager.list(cwd)).find((item) => item.id === result.thread_id);
+			expect(session).toBeTruthy();
+			appendAssistantOutput(SessionManager.open(session!.path), "Found 3 auth TODOs");
+
+			for (const handler of eventHandlers.get("exit") ?? []) {
+				handler(0);
+			}
+
+			await vi.waitFor(() => {
+				expect(ctx.ui.notify).toHaveBeenCalledWith(
+					"pi-threads: researcher completed: Found 3 auth TODOs",
+					"info",
+				);
+			});
+
+			const completedCalls = vi
+				.mocked(pi.sendMessage)
+				.mock.calls.filter(([message]) => message.customType === THREAD_TRANSCRIPT_TYPES.COMPLETED);
+			expect(completedCalls).toHaveLength(1);
+			expect(completedCalls[0]?.[0]).toMatchObject({
+				customType: THREAD_TRANSCRIPT_TYPES.COMPLETED,
+				display: true,
+				content: "Background thread finished → researcher: completed: Found 3 auth TODOs",
+				details: expect.objectContaining({
+					kind: "Completed",
+					thread_id: result.thread_id,
+					thread_name: "researcher",
+					status: "completed",
+					result_preview: "Found 3 auth TODOs",
+				}),
+			});
+		});
+
+		it("dedupes background completion notifications for the same thread", async () => {
+			const cwd = createWorkspace();
+			const pi = createMockPi();
+			getGlobalSeenMap("__pi_threads_completion_seen__").clear();
+			const mockProcess = createMockProcess({ exitImmediately: true, exitCode: 0 });
+			const manager = new ThreadManager(pi, {
+				spawner: {
+					spawn: vi.fn(() => mockProcess),
+				},
+			});
+			const ctx = createContext(cwd);
+			manager.bindContext(ctx);
+
+			const result = await manager.spawn(ctx, {
+				task: "Fast exit",
+				thread_name: "fast",
+				agent_type: "worker",
+			});
+
+			await vi.waitFor(() => {
+				expect(ctx.ui.notify).toHaveBeenCalledTimes(1);
+			});
+
+			const session = (await SessionManager.list(cwd)).find((item) => item.id === result.thread_id);
+			expect(session).toBeTruthy();
+			const childSession = SessionManager.open(session!.path);
+			const record = {
+				process: null,
+				sessionFile: session!.path,
+				threadName: "fast",
+				status: "running" as const,
+				agent_type: "worker",
+				depth: 1,
+				task: "Fast exit",
+				stdoutBuffer: createRingBuffer(10),
+				stderrBuffer: createRingBuffer(10),
+				activityBuffer: createRingBuffer(10),
+			};
+
+			type EmitBackgroundCompletion = (
+				threadId: string,
+				record: {
+					threadName: string;
+					agent_type: string;
+				},
+				status: "completed",
+				childSession: SessionManager,
+			) => void;
+			(manager as unknown as { emitBackgroundCompletion: EmitBackgroundCompletion }).emitBackgroundCompletion(
+				result.thread_id,
+				record,
+				"completed",
+				childSession,
+			);
+
+			expect(ctx.ui.notify).toHaveBeenCalledTimes(1);
+			const completedCalls = vi
+				.mocked(pi.sendMessage)
+				.mock.calls.filter(([message]) => message.customType === THREAD_TRANSCRIPT_TYPES.COMPLETED);
+			expect(completedCalls).toHaveLength(1);
+		});
+
 		it("writes thread_completed when subprocess exits immediately", async () => {
 			const cwd = createWorkspace();
 			const mockProcess = createMockProcess({ exitImmediately: true, exitCode: 0 });
@@ -1002,6 +1125,57 @@ describe("ThreadManager", () => {
 					}),
 				]),
 			);
+		});
+
+		it("does not emit background completion transcript while wait_thread is active", async () => {
+			const cwd = createWorkspace();
+			const pi = createMockPi();
+			getGlobalSeenMap("__pi_threads_completion_seen__").clear();
+			let pollCount = 0;
+			const mockProcess = createMockProcess();
+			const eventHandlers = new Map<string, Array<(...args: unknown[]) => void>>();
+			(mockProcess.on as ReturnType<typeof vi.fn>).mockImplementation(
+				(event: string, handler: (...args: unknown[]) => void) => {
+					const handlers = eventHandlers.get(event) ?? [];
+					handlers.push(handler);
+					eventHandlers.set(event, handlers);
+				},
+			);
+			const manager = new ThreadManager(pi, {
+				spawner: { spawn: vi.fn(() => mockProcess) },
+				sleep: async () => {
+					pollCount++;
+					if (pollCount === 1) {
+						for (const handler of eventHandlers.get("exit") ?? []) {
+							handler(0);
+						}
+					}
+				},
+			});
+			const ctx = createContext(cwd);
+			manager.bindContext(ctx);
+
+			const spawned = await manager.spawn(ctx, {
+				task: "Finish during wait",
+				thread_name: "worker",
+				agent_type: "worker",
+			});
+
+			await manager.wait(ctx, { thread_ids: [spawned.thread_id], timeout: 2 });
+
+			const completedCalls = vi
+				.mocked(pi.sendMessage)
+				.mock.calls.filter(([message]) => message.customType === THREAD_TRANSCRIPT_TYPES.COMPLETED);
+			expect(completedCalls).toHaveLength(0);
+			expect(ctx.ui.notify).not.toHaveBeenCalled();
+
+			const waitFinished = vi
+				.mocked(pi.sendMessage)
+				.mock.calls.filter(([message]) => {
+					const details = message.details as { phase?: string } | undefined;
+					return message.customType === THREAD_TRANSCRIPT_TYPES.WAIT && details?.phase === "finished";
+				});
+			expect(waitFinished).toHaveLength(1);
 		});
 
 		it("emits wait transcript messages for started and finished phases", async () => {
@@ -1589,6 +1763,7 @@ describe("ThreadManager", () => {
 					thread_id: "thread-close",
 					thread_name: "done",
 					agent_type: "worker",
+					model: "test",
 					customType: THREAD_TRANSCRIPT_TYPES.CLOSED,
 				},
 			});
@@ -1684,6 +1859,48 @@ describe("ThreadManager", () => {
 		});
 	});
 
+	describe("status feed listener", () => {
+		it("notifies on spawn and subprocess exit", async () => {
+			const cwd = createWorkspace();
+			const onStatusFeedChange = vi.fn();
+			const mockProcess = createMockProcess({ exitImmediately: true, exitCode: 0 });
+			const manager = new ThreadManager(createMockPi(), {
+				spawner: { spawn: vi.fn(() => mockProcess) },
+				onStatusFeedChange,
+			});
+			const ctx = createContext(cwd);
+
+			const result = await manager.spawn(ctx, {
+				task: "Research auth",
+				thread_name: "researcher",
+				agent_type: "researcher",
+				cwd,
+			});
+
+			expect(onStatusFeedChange).toHaveBeenCalledTimes(2);
+			expect(manager.getActiveThreads().has(result.thread_id)).toBe(false);
+		});
+
+		it("supports setStatusFeedListener after construction", async () => {
+			const cwd = createWorkspace();
+			const listener = vi.fn();
+			const manager = new ThreadManager(createMockPi(), {
+				spawner: { spawn: vi.fn(() => createMockProcess()) },
+			});
+			manager.setStatusFeedListener(listener);
+			const ctx = createContext(cwd);
+
+			await manager.spawn(ctx, {
+				task: "Scan repo",
+				thread_name: "scanner",
+				agent_type: "worker",
+				cwd,
+			});
+
+			expect(listener).toHaveBeenCalledTimes(1);
+		});
+	});
+
 	describe("getStatusFeed", () => {
 		it("returns parsed tool activity lines from child stdout", () => {
 			const manager = new ThreadManager(createMockPi());
@@ -1720,6 +1937,7 @@ describe("ThreadManager", () => {
 					thread_name: "worker",
 					status: "running",
 					lines: ["read src/index.ts"],
+					depth: 1,
 				},
 			]);
 		});

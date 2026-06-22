@@ -8,6 +8,11 @@
 import type { ChildProcess } from "node:child_process";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import {
+	buildThreadCompletionKey,
+	getGlobalSeenMap,
+	markSeenWithTtl,
+} from "./completion-dedupe.ts";
 import { forkParentContextIntoChild } from "./context-fork.ts";
 import {
 	appendInterAgentUserMessage,
@@ -15,6 +20,7 @@ import {
 	buildThreadChildrenMap,
 	findFirstThreadMeta,
 	findLatestThreadCompleted,
+	findLatestThreadModel,
 	formatInterAgentMessage,
 	getThreadSessionIndex,
 	listThreadSessions,
@@ -103,6 +109,7 @@ export interface StatusFeedEntry {
 	thread_name: string;
 	status: ThreadRuntimeStatus;
 	lines: string[];
+	depth?: number;
 }
 
 export type { ThreadSubprocessSpawner } from "./thread-subprocess-runner.ts";
@@ -111,6 +118,7 @@ export interface ThreadManagerDeps {
 	spawner?: ThreadSubprocessSpawner;
 	sleep?: (ms: number) => Promise<void>;
 	threadEvents?: ThreadEvents;
+	onStatusFeedChange?: () => void;
 }
 
 function resolveThreadStatus(
@@ -255,12 +263,18 @@ export async function pollThreadCompletions(
 	return { completions: results, timedOut: false };
 }
 
+const COMPLETION_NOTIFY_TTL_MS = 10 * 60 * 1000;
+const COMPLETION_SEEN_STORE_KEY = "__pi_threads_completion_seen__";
+
 export class ThreadManager {
 	private readonly threads = new Map<ThreadId, ThreadRecord>();
+	private readonly waitingThreadIds = new Set<ThreadId>();
+	private readonly completionSeen = getGlobalSeenMap(COMPLETION_SEEN_STORE_KEY);
 	private threadChildren = new Map<string, Set<ThreadId>>();
 	private readonly subprocessRunner: ThreadSubprocessRunner;
 	private readonly sleep: (ms: number) => Promise<void>;
 	private readonly threadEvents: ThreadEvents;
+	private statusFeedListener: (() => void) | undefined;
 	private ctx: ExtensionContext | null = null;
 
 	constructor(
@@ -275,6 +289,15 @@ export class ThreadManager {
 		});
 		this.sleep = deps.sleep ?? delay;
 		this.threadEvents = deps.threadEvents ?? new ThreadEvents(pi);
+		this.statusFeedListener = deps.onStatusFeedChange;
+	}
+
+	setStatusFeedListener(listener: (() => void) | undefined): void {
+		this.statusFeedListener = listener;
+	}
+
+	private notifyStatusFeedChange(): void {
+		this.statusFeedListener?.();
 	}
 
 	bindContext(ctx: ExtensionContext): void {
@@ -298,6 +321,7 @@ export class ThreadManager {
 				thread_name: record.threadName,
 				status: record.status,
 				lines: getRingBufferTail(record.activityBuffer, maxLines),
+				depth: record.depth,
 			});
 		}
 		return feed;
@@ -390,12 +414,14 @@ export class ThreadManager {
 			},
 		});
 
-		return {
+		const result = {
 			thread_id: threadId,
 			thread_name: params.thread_name,
 			agent_type: params.agent_type,
 			task: params.task,
 		};
+		this.notifyStatusFeedChange();
+		return result;
 	}
 
 	async wait(
@@ -414,112 +440,122 @@ export class ThreadManager {
 		});
 
 		for (const session of sessions) {
-			this.threadEvents.recordWait({
-				thread_id: session.meta.thread_id,
-				thread_name: session.meta.thread_name,
-				agent_type: session.meta.agent_type,
-				phase: "started",
-				status: "Running",
-			});
+			this.waitingThreadIds.add(session.meta.thread_id);
 		}
 
-		const timeoutMs = params.timeout !== undefined ? params.timeout * 1000 : undefined;
-
-		let tickSnapshot: Map<ThreadId, WaitThreadTickSnapshot> | undefined;
-
-		let pollResult: PollThreadCompletionsResult;
 		try {
-			pollResult = await pollThreadCompletions(
-				params.thread_ids,
-				(threadId) => {
-					if (!tickSnapshot) {
-						tickSnapshot = this.pollWaitThreadTick(sessions);
-					}
-					return tickSnapshot.get(threadId)?.completion;
-				},
-				{
-					timeoutMs,
-					pollIntervalMs: WAIT_POLL_INTERVAL_MS,
-					sleep: this.sleep,
-					signal,
-					onPoll: () => {
-						if (onUpdate && tickSnapshot) {
-							onUpdate({
-								waiting: sessions.map((session) => {
-									const threadId = session.meta.thread_id;
-									const tick = tickSnapshot!.get(threadId);
-									return {
-										thread_id: threadId,
-										thread_name: session.meta.thread_name,
-										agent_type: session.meta.agent_type,
-										task: session.meta.task,
-										status: tick?.waitingStatus ?? "running",
-										activities: tick?.activities ?? [],
-									};
-								}),
-							});
+			for (const session of sessions) {
+				this.threadEvents.recordWait({
+					thread_id: session.meta.thread_id,
+					thread_name: session.meta.thread_name,
+					agent_type: session.meta.agent_type,
+					phase: "started",
+					status: "Running",
+				});
+			}
+
+			const timeoutMs = params.timeout !== undefined ? params.timeout * 1000 : undefined;
+
+			let tickSnapshot: Map<ThreadId, WaitThreadTickSnapshot> | undefined;
+
+			let pollResult: PollThreadCompletionsResult;
+			try {
+				pollResult = await pollThreadCompletions(
+					params.thread_ids,
+					(threadId) => {
+						if (!tickSnapshot) {
+							tickSnapshot = this.pollWaitThreadTick(sessions);
 						}
-						tickSnapshot = undefined;
+						return tickSnapshot.get(threadId)?.completion;
 					},
-				},
-			);
-		} catch (error) {
-			if (error instanceof ThreadWaitAbortedError) {
+					{
+						timeoutMs,
+						pollIntervalMs: WAIT_POLL_INTERVAL_MS,
+						sleep: this.sleep,
+						signal,
+						onPoll: () => {
+							if (onUpdate && tickSnapshot) {
+								onUpdate({
+									waiting: sessions.map((session) => {
+										const threadId = session.meta.thread_id;
+										const tick = tickSnapshot!.get(threadId);
+										return {
+											thread_id: threadId,
+											thread_name: session.meta.thread_name,
+											agent_type: session.meta.agent_type,
+											task: session.meta.task,
+											status: tick?.waitingStatus ?? "running",
+											activities: tick?.activities ?? [],
+										};
+									}),
+								});
+							}
+							tickSnapshot = undefined;
+						},
+					},
+				);
+			} catch (error) {
+				if (error instanceof ThreadWaitAbortedError) {
+					this.reconcileActiveThreadsAfterWaitTimeout(params.thread_ids, sessions);
+				}
+				throw error;
+			}
+
+			if (pollResult.timedOut) {
 				this.reconcileActiveThreadsAfterWaitTimeout(params.thread_ids, sessions);
 			}
-			throw error;
-		}
 
-		if (pollResult.timedOut) {
-			this.reconcileActiveThreadsAfterWaitTimeout(params.thread_ids, sessions);
-		}
+			const threads = sessions.map((session) => {
+				const threadId = session.meta.thread_id;
+				const completionStatus = pollResult.completions.get(threadId);
+				const manager = SessionManager.open(session.path);
+				const entries = manager.getEntries();
+				const completion = findLatestThreadCompleted(entries);
+				const active = this.threads.get(threadId);
 
-		const threads = sessions.map((session) => {
-			const threadId = session.meta.thread_id;
-			const completionStatus = pollResult.completions.get(threadId);
-			const manager = SessionManager.open(session.path);
-			const entries = manager.getEntries();
-			const completion = findLatestThreadCompleted(entries);
-			const active = this.threads.get(threadId);
+				if (pollResult.timedOut && completionStatus === undefined) {
+					return {
+						thread_id: threadId,
+						thread_name: session.meta.thread_name,
+						agent_type: session.meta.agent_type,
+						task: session.meta.task,
+						status: completion?.status ?? active?.status ?? "running",
+						activities: active ? [...active.activityBuffer.lines] : [],
+					} satisfies WaitThreadItem;
+				}
 
-			if (pollResult.timedOut && completionStatus === undefined) {
+				const status = completionStatus ?? "error";
+				const output = extractThreadOutput(entries);
+				const activities = active ? [...active.activityBuffer.lines] : [];
+
+				this.threadEvents.recordWait({
+					thread_id: threadId,
+					thread_name: session.meta.thread_name,
+					agent_type: session.meta.agent_type,
+					phase: "finished",
+					status,
+				});
+
+				this.threads.delete(threadId);
+
 				return {
 					thread_id: threadId,
 					thread_name: session.meta.thread_name,
 					agent_type: session.meta.agent_type,
 					task: session.meta.task,
-					status: completion?.status ?? active?.status ?? "running",
-					activities: active ? [...active.activityBuffer.lines] : [],
+					status,
+					activities,
+					output,
+					usage: completion?.usage,
 				} satisfies WaitThreadItem;
-			}
-
-			const status = completionStatus ?? "error";
-			const output = extractThreadOutput(entries);
-			const activities = active ? [...active.activityBuffer.lines] : [];
-
-			this.threadEvents.recordWait({
-				thread_id: threadId,
-				thread_name: session.meta.thread_name,
-				agent_type: session.meta.agent_type,
-				phase: "finished",
-				status,
 			});
 
-			this.threads.delete(threadId);
-
-			return {
-				thread_id: threadId,
-				thread_name: session.meta.thread_name,
-				agent_type: session.meta.agent_type,
-				task: session.meta.task,
-				status,
-				activities,
-				output,
-				usage: completion?.usage,
-			} satisfies WaitThreadItem;
-		});
-
-		return pollResult.timedOut ? { threads, timedOut: true } : { threads };
+			return pollResult.timedOut ? { threads, timedOut: true } : { threads };
+		} finally {
+			for (const session of sessions) {
+				this.waitingThreadIds.delete(session.meta.thread_id);
+			}
+		}
 	}
 
 	async list(ctx: ExtensionContext, params: ListThreadsParams = {}): Promise<ThreadSummary[]> {
@@ -568,10 +604,12 @@ export class ThreadManager {
 			message_preview: params.message,
 		});
 
-		return {
+		const result = {
 			thread_id: params.thread_id,
 			thread_name: record.threadName,
 		};
+		this.notifyStatusFeedChange();
+		return result;
 	}
 
 	async interrupt(ctx: ExtensionContext, params: InterruptThreadParams): Promise<InterruptThreadResult> {
@@ -599,6 +637,7 @@ export class ThreadManager {
 		}
 
 		this.threads.delete(params.thread_id);
+		this.notifyStatusFeedChange();
 
 		return {
 			thread_id: params.thread_id,
@@ -629,6 +668,8 @@ export class ThreadManager {
 			thread_id: params.thread_id,
 			thread_name: session.meta.thread_name,
 			agent_type: session.meta.agent_type,
+			usage: session.completion?.usage,
+			model: session.model,
 		});
 
 		upsertThreadSessionScanCache(ctx.cwd, {
@@ -685,6 +726,10 @@ export class ThreadManager {
 			);
 		}
 
+		if (resumedCount > 0) {
+			this.notifyStatusFeedChange();
+		}
+
 		return {
 			incompleteCount: incomplete.length,
 			totalThreadSessions: sessions.length,
@@ -736,6 +781,59 @@ export class ThreadManager {
 		}
 	}
 
+	private notifyLevelForCompletionStatus(status: ThreadCompletedStatus): "info" | "warning" | "error" {
+		switch (status) {
+			case "completed":
+				return "info";
+			case "error":
+				return "error";
+			default:
+				return "warning";
+		}
+	}
+
+	private shouldEmitBackgroundCompletion(threadId: ThreadId): boolean {
+		return !this.waitingThreadIds.has(threadId);
+	}
+
+	private emitBackgroundCompletion(
+		threadId: ThreadId,
+		record: ThreadRecord,
+		status: ThreadCompletedStatus,
+		childSession: SessionManager,
+	): void {
+		if (!this.shouldEmitBackgroundCompletion(threadId)) return;
+
+		const key = buildThreadCompletionKey(threadId);
+		if (markSeenWithTtl(this.completionSeen, key, Date.now(), COMPLETION_NOTIFY_TTL_MS)) {
+			return;
+		}
+
+		const entries = childSession.getEntries();
+		const resultPreview = extractThreadOutput(entries) ?? "(no output)";
+		const completion = findLatestThreadCompleted(entries);
+
+		this.threadEvents.recordCompleted({
+			thread_id: threadId,
+			thread_name: record.threadName,
+			agent_type: record.agent_type,
+			status,
+			result_preview: resultPreview,
+			usage: completion?.usage,
+			model: findLatestThreadModel(entries),
+		});
+
+		const ctx = this.ctx;
+		if (ctx) {
+			const preview =
+				resultPreview.length > 80 ? `${resultPreview.slice(0, 77)}...` : resultPreview;
+			ctx.ui.notify(
+				`pi-threads: ${record.threadName} ${status}: ${preview}`,
+				this.notifyLevelForCompletionStatus(status),
+			);
+		}
+	}
+
 	private async handleSubprocessExit(
 		threadId: ThreadId,
 		sessionFile: string,
@@ -748,6 +846,7 @@ export class ThreadManager {
 		const existingCompletion = findLatestThreadCompleted(childSession.getEntries());
 		if (existingCompletion) {
 			this.threads.delete(threadId);
+			this.notifyStatusFeedChange();
 			return;
 		}
 
@@ -758,6 +857,8 @@ export class ThreadManager {
 		});
 
 		this.threads.delete(threadId);
+		this.notifyStatusFeedChange();
+		this.emitBackgroundCompletion(threadId, record, status, childSession);
 	}
 
 }

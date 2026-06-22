@@ -17,11 +17,20 @@ import type { ThreadCompletedStatus } from "./types.ts";
 
 export const THREAD_PICKER_STATUS_ID = "pi-threads-picker";
 
+const TASK_PREVIEW_MAX_LENGTH = 45;
+
+function truncateTaskPreview(task: string, maxLength = TASK_PREVIEW_MAX_LENGTH): string {
+	const trimmed = task.trim();
+	if (trimmed.length <= maxLength) return trimmed;
+	return `${trimmed.slice(0, maxLength - 3)}...`;
+}
+
 export interface ThreadNavigationEntry {
 	path: string;
 	thread_id: string | null;
 	thread_name: string;
 	agent_type?: string;
+	task?: string;
 	status: "main" | ThreadRuntimeStatus | ThreadCompletedStatus;
 }
 
@@ -104,6 +113,7 @@ export class ThreadNavigator {
 				thread_id: session.meta.thread_id,
 				thread_name: session.meta.thread_name,
 				agent_type: session.meta.agent_type,
+				task: session.meta.task,
 				status,
 			});
 		}
@@ -138,21 +148,59 @@ export class ThreadNavigator {
 	formatEntryLabel(entry: ThreadNavigationEntry): string {
 		if (entry.status === "main") return "⏳ Main";
 		const indicator = statusFeedIndicatorGlyph(resolveStatusFeedIndicator(entry.status));
-		return `${indicator} ${entry.thread_name}`;
+		let label = `${indicator} ${entry.thread_name}`;
+		if (entry.agent_type) {
+			label += ` [${entry.agent_type}]`;
+		}
+		if (entry.task) {
+			label += ` — ${truncateTaskPreview(entry.task)}`;
+		}
+		return label;
 	}
 
-	async switchToEntry(ctx: ExtensionCommandContext, entry: ThreadNavigationEntry): Promise<boolean> {
-		const result = await ctx.switchSession(entry.path, {
-			withSession: async (replacementCtx) => {
-				const index = this.entries.findIndex((item) => item.path === entry.path);
-				if (index >= 0) this.currentIndex = index;
-				this.updateStatusBar(replacementCtx);
-			},
-		});
-		return !result.cancelled;
+	private lastCommandCtx?: ExtensionCommandContext;
+
+	async switchToEntry(ctx: ExtensionContext, entry: ThreadNavigationEntry): Promise<boolean> {
+		let commandCtx: ExtensionCommandContext | undefined;
+		if ("switchSession" in ctx && typeof (ctx as any).switchSession === "function") {
+			commandCtx = ctx as ExtensionCommandContext;
+			this.lastCommandCtx = commandCtx;
+		} else if (this.lastCommandCtx && typeof this.lastCommandCtx.switchSession === "function") {
+			commandCtx = this.lastCommandCtx;
+		}
+
+		if (!commandCtx) {
+			ctx.ui.notify(
+				"Session switching is not supported by this shortcut/context. Please run /threads command once to initialize session navigation shortcuts.",
+				"error",
+			);
+			return false;
+		}
+
+		try {
+			const result = await commandCtx.switchSession(entry.path, {
+				withSession: async (replacementCtx) => {
+					const index = this.entries.findIndex((item) => item.path === entry.path);
+					if (index >= 0) this.currentIndex = index;
+					this.updateStatusBar(replacementCtx);
+				},
+			});
+			if (result.cancelled) {
+				ctx.ui.notify("Session switch cancelled", "warning");
+				return false;
+			}
+			return true;
+		} catch (err) {
+			const errMsg = err instanceof Error ? err.message : String(err);
+			ctx.ui.notify(`Failed to switch session: ${errMsg}`, "error");
+			return false;
+		}
 	}
 
-	async cycle(ctx: ExtensionCommandContext, direction: -1 | 1, manager: ThreadManager): Promise<void> {
+	async cycle(ctx: ExtensionContext, direction: -1 | 1, manager: ThreadManager): Promise<void> {
+		if ("switchSession" in ctx && typeof (ctx as any).switchSession === "function") {
+			this.lastCommandCtx = ctx as ExtensionCommandContext;
+		}
 		if (this.entries.length === 0) {
 			await this.refresh(ctx, manager);
 		}
@@ -165,19 +213,21 @@ export class ThreadNavigator {
 	}
 
 	async showPicker(ctx: ExtensionCommandContext, manager: ThreadManager): Promise<void> {
+		this.lastCommandCtx = ctx;
 		const entries = await this.refresh(ctx, manager);
-		const threadEntries = entries.filter((entry) => entry.status !== "main");
-		if (threadEntries.length === 0) {
-			ctx.ui.notify("No thread sessions found", "info");
+		const currentPath = ctx.sessionManager.getSessionFile();
+		const selectableEntries = entries.filter((entry) => entry.path !== currentPath);
+		if (selectableEntries.length === 0) {
+			ctx.ui.notify("No other thread sessions found", "info");
 			return;
 		}
 
-		const labels = threadEntries.map((entry) => this.formatEntryLabel(entry));
+		const labels = selectableEntries.map((entry) => this.formatEntryLabel(entry));
 		const choice = await ctx.ui.select("Thread sessions:", labels);
 		if (!choice) return;
 
 		const selectedIndex = labels.indexOf(choice);
-		const selected = selectedIndex >= 0 ? threadEntries[selectedIndex] : undefined;
+		const selected = selectedIndex >= 0 ? selectableEntries[selectedIndex] : undefined;
 		if (!selected) return;
 		await this.switchToEntry(ctx, selected);
 	}
@@ -209,7 +259,7 @@ export function registerThreadPicker(pi: ExtensionAPI, manager: ThreadManager): 
 
 	// alt+left/alt+right collide with pi tree navigation (app.tree.foldOrUp / unfoldOrDown).
 	const cycleShortcut = (direction: -1 | 1) => async (ctx: ExtensionContext) => {
-		await navigator.cycle(ctx as ExtensionCommandContext, direction, manager);
+		await navigator.cycle(ctx, direction, manager);
 	};
 
 	pi.registerShortcut("alt+,", {

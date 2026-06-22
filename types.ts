@@ -21,6 +21,7 @@ export const THREAD_TRANSCRIPT_TYPES = {
 	SPAWNED: "thread_spawned",
 	SEND: "thread_send",
 	WAIT: "thread_wait",
+	COMPLETED: "thread_completed",
 	INTERRUPTED: "thread_interrupted",
 	CLOSED: "thread_closed",
 } as const;
@@ -70,7 +71,7 @@ export interface ThreadCompletedData {
 	exit_code?: number;
 }
 
-export type SubAgentActivityKind = "Spawned" | "Interacted" | "Interrupted" | "Closed";
+export type SubAgentActivityKind = "Spawned" | "Interacted" | "Completed" | "Interrupted" | "Closed";
 
 export interface SubAgentActivityBase {
 	thread_id: ThreadId;
@@ -101,6 +102,16 @@ export interface ThreadWaitActivity extends SubAgentActivityBase {
 	status?: string;
 }
 
+/** Inline transcript event: background thread completed without an active wait. */
+export interface ThreadCompletedActivity extends SubAgentActivityBase {
+	customType: typeof THREAD_TRANSCRIPT_TYPES.COMPLETED;
+	kind: "Completed";
+	status: ThreadCompletedStatus;
+	result_preview?: string;
+	usage?: Usage;
+	model?: string;
+}
+
 /** Inline transcript event: thread interrupted. */
 export interface ThreadInterruptedActivity extends SubAgentActivityBase {
 	customType: typeof THREAD_TRANSCRIPT_TYPES.INTERRUPTED;
@@ -111,6 +122,8 @@ export interface ThreadInterruptedActivity extends SubAgentActivityBase {
 export interface ThreadClosedActivity extends SubAgentActivityBase {
 	customType: typeof THREAD_TRANSCRIPT_TYPES.CLOSED;
 	kind: "Closed";
+	usage?: Usage;
+	model?: string;
 }
 
 /** Union of all inline SubAgentActivityEvent payloads (details on pi.sendMessage). */
@@ -118,5 +131,6 @@ export type SubAgentActivityEvent =
 	| ThreadSpawnedActivity
 	| ThreadSendActivity
 	| ThreadWaitActivity
+	| ThreadCompletedActivity
 	| ThreadInterruptedActivity
 	| ThreadClosedActivity;

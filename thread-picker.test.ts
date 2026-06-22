@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import { writeThreadMeta, writeThreadSpawnedDurable } from "./persistence.ts";
@@ -72,6 +72,65 @@ describe("ThreadNavigator", () => {
 		expect(entries.map((entry) => entry.thread_name)).toEqual(["Main", "alpha", "beta"]);
 		expect(entries[0]?.path).toBe(parentPath);
 		expect(entries[1]?.agent_type).toBe("worker");
+		expect(entries[1]?.task).toBe("first");
+		expect(entries[2]?.task).toBe("second");
+	});
+
+	it("formats picker labels with agent_type and truncated task", () => {
+		const navigator = new ThreadNavigator();
+
+		expect(
+			navigator.formatEntryLabel({
+				path: "/tmp/main.jsonl",
+				thread_id: null,
+				thread_name: "Main",
+				status: "main",
+			}),
+		).toBe("⏳ Main");
+
+		expect(
+			navigator.formatEntryLabel({
+				path: "/tmp/child.jsonl",
+				thread_id: "t1",
+				thread_name: "worker",
+				agent_type: "researcher",
+				task: "Implement auth refactor",
+				status: "completed",
+			}),
+		).toBe("✓ worker [researcher] — Implement auth refactor");
+
+		expect(
+			navigator.formatEntryLabel({
+				path: "/tmp/child.jsonl",
+				thread_id: "t2",
+				thread_name: "alpha",
+				agent_type: "coder",
+				status: "running",
+			}),
+		).toBe("⏳ alpha [coder]");
+
+		expect(
+			navigator.formatEntryLabel({
+				path: "/tmp/child.jsonl",
+				thread_id: "t3",
+				thread_name: "beta",
+				task: "Review pull request",
+				status: "error",
+			}),
+		).toBe("✗ beta — Review pull request");
+
+		const longTask =
+			"Investigate intermittent failures in the session resume path across large workspaces";
+		expect(
+			navigator.formatEntryLabel({
+				path: "/tmp/child.jsonl",
+				thread_id: "t4",
+				thread_name: "gamma",
+				agent_type: "researcher",
+				task: longTask,
+				status: "running",
+			}),
+		).toBe(`⏳ gamma [researcher] — ${longTask.slice(0, 42)}...`);
 	});
 
 	it("formats status bar labels for main and thread sessions", async () => {
@@ -131,6 +190,101 @@ describe("ThreadNavigator", () => {
 		await navigator.cycle(commandCtx as never, 1, manager);
 		expect(switchedPaths).toHaveLength(2);
 		expect(navigator.getCurrentIndex()).toBe(0);
+	});
+
+	it("showPicker lists other sessions including Main but excludes the current session", async () => {
+		const cwd = createWorkspace();
+		const ctx = createContext(cwd);
+		const parent = ctx.sessionManager as SessionManager;
+
+		const child = trackSession(SessionManager.create(cwd));
+		persistSession(child);
+		writeThreadMeta(child, {
+			parent_id: parent.getSessionId(),
+			thread_id: child.getSessionId(),
+			thread_name: "alpha",
+			depth: 1,
+			task: "first",
+			agent_type: "worker",
+		});
+
+		const navigator = new ThreadNavigator();
+		const manager = new ThreadManager({} as never);
+		
+		const childCtx = {
+			cwd,
+			sessionManager: child,
+			ui: {
+				notify: vi.fn(),
+				select: vi.fn(async () => "⏳ Main"),
+				setStatus: vi.fn(),
+			},
+			switchSession: vi.fn(async () => ({ cancelled: false })),
+		} as any;
+
+		await navigator.refresh(childCtx, manager);
+		await navigator.showPicker(childCtx as never, manager);
+
+		expect(childCtx.ui.select).toHaveBeenCalledWith("Thread sessions:", ["⏳ Main"]);
+		expect(childCtx.switchSession).toHaveBeenCalledWith(parent.getSessionFile(), expect.any(Object));
+	});
+
+	it("switchToEntry falls back to lastCommandCtx and notifies on error or cancellation", async () => {
+		const cwd = createWorkspace();
+		const ctx = createContext(cwd);
+		const navigator = new ThreadNavigator();
+
+		const notifySpy = vi.fn();
+		const minimalCtx = {
+			ui: { notify: notifySpy },
+		} as unknown as ExtensionContext;
+
+		const entry = {
+			path: "/tmp/some.jsonl",
+			thread_id: "t1",
+			thread_name: "some",
+			status: "running" as const,
+		};
+
+		const success = await navigator.switchToEntry(minimalCtx, entry);
+		expect(success).toBe(false);
+		expect(notifySpy).toHaveBeenCalledWith(
+			"Session switching is not supported by this shortcut/context. Please run /threads command once to initialize session navigation shortcuts.",
+			"error",
+		);
+
+		const switchSessionSpy = vi.fn(async () => ({ cancelled: true }));
+		const commandCtx = {
+			...minimalCtx,
+			switchSession: switchSessionSpy,
+		} as unknown as ExtensionCommandContext;
+
+		await navigator.switchToEntry(commandCtx, entry);
+		expect(switchSessionSpy).toHaveBeenCalled();
+		expect(notifySpy).toHaveBeenCalledWith("Session switch cancelled", "warning");
+
+		const switchSessionSpy2 = vi.fn(async () => ({ cancelled: false }));
+		const commandCtx2 = {
+			...minimalCtx,
+			switchSession: switchSessionSpy2,
+		} as unknown as ExtensionCommandContext;
+
+		await navigator.switchToEntry(commandCtx2, entry);
+		
+		const success2 = await navigator.switchToEntry(minimalCtx, entry);
+		expect(success2).toBe(true);
+		expect(switchSessionSpy2).toHaveBeenCalledTimes(2);
+
+		const switchSessionSpy3 = vi.fn(async () => {
+			throw new Error("File not found");
+		});
+		const commandCtx3 = {
+			...minimalCtx,
+			switchSession: switchSessionSpy3,
+		} as unknown as ExtensionCommandContext;
+
+		await navigator.switchToEntry(commandCtx3, entry);
+		expect(notifySpy).toHaveBeenCalledWith("Failed to switch session: File not found", "error");
 	});
 });
 
